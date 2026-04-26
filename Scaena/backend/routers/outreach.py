@@ -3,6 +3,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import and_
 from backend.database import get_db
 from backend import models, schemas
+from backend.services.conversation_context import prior_venue_context
+from backend.services.mongo_store import mirror_pitch_sent, mirror_venues
 from backend.websocket_manager import manager
 from backend.services.booking_pipeline import ensure_booking_for_pitch
 from backend.services.pitch_generation import generate_pitch_for_venue, generate_rebook_pitch, remove_long_dashes
@@ -12,8 +14,9 @@ import asyncio
 import json
 
 try:
-    from agents.research_sources import discover_live_venues, live_sources_configured
+    from agents.research_sources import curated_opportunity_fallback, discover_live_venues, live_sources_configured
 except Exception:
+    curated_opportunity_fallback = None
     discover_live_venues = None
     live_sources_configured = lambda: False
 
@@ -38,14 +41,15 @@ def _save_pitch_with_conversation(db: Session, payload: dict) -> models.Pitch:
     db.add(conv)
     db.flush()
 
-    msg = models.ConversationMessage(
-        conversation_id=conv.id,
-        direction="outbound",
-        message_type="initial_pitch",
-        subject=payload.get("pitch_subject"),
-        body=payload.get("pitch_body"),
-    )
-    db.add(msg)
+    if payload.get("status") in {"sent", "responded", "booked"}:
+        msg = models.ConversationMessage(
+            conversation_id=conv.id,
+            direction="outbound",
+            message_type="initial_pitch",
+            subject=payload.get("pitch_subject"),
+            body=payload.get("pitch_body"),
+        )
+        db.add(msg)
     db.commit()
     db.refresh(pitch)
     return pitch
@@ -182,6 +186,15 @@ async def generate_and_save_rebook_pitch(data: schemas.RebookPitchCreate, db: Se
             "conversation_stage": booking.conversation_stage,
         },
         rate,
+        prior_context=prior_venue_context(
+            db,
+            data.entertainer_id,
+            booking.venue_name,
+            contact_email=(
+                (original_pitch.recipient_email if original_pitch else None)
+                or (venue.contact_email if venue else None)
+            ),
+        ),
     )
 
     pitch = _save_pitch_with_conversation(db, {
@@ -203,6 +216,7 @@ async def generate_and_save_rebook_pitch(data: schemas.RebookPitchCreate, db: Se
     })
 
     booking.rebooking_sent = True
+    booking.conversation_stage = "rebook_outreach_sent"
     db.commit()
 
     await manager.broadcast({
@@ -325,6 +339,8 @@ def update_pitch(pitch_id: str, data: schemas.PitchUpdate, db: Session = Depends
     if pitch.response_type == "accepted":
         conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == pitch.id).first()
         ensure_booking_for_pitch(db, pitch, conv)
+    if update.get("status") == "sent":
+        mirror_pitch_sent(pitch, recipient=pitch.recipient_email, dry_run=False, source="outreach_status_update")
     return {"ok": True}
 
 
@@ -390,17 +406,6 @@ def save_followup(data: schemas.FollowUpCreate, db: Session = Depends(get_db)):
     pitch = db.query(models.Pitch).filter(models.Pitch.id == data.pitch_id).first()
     if pitch:
         pitch.followup_count = (pitch.followup_count or 0) + 1
-    # Add to conversation
-    conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == data.pitch_id).first()
-    if conv:
-        msg = models.ConversationMessage(
-            conversation_id=conv.id,
-            direction="outbound",
-            message_type=f"followup_{data.followup_number}",
-            subject=payload["subject"],
-            body=payload["body"],
-        )
-        db.add(msg)
     db.commit()
     db.refresh(fu)
     return {"followup_id": fu.id}
@@ -413,6 +418,30 @@ def mark_followup_sent(followup_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Follow-up not found")
     fu.status = "sent"
     fu.sent_at = datetime.utcnow()
+    conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == fu.pitch_id).first()
+    if conv:
+        message_type = f"followup_{fu.followup_number}"
+        msg = (
+            db.query(models.ConversationMessage)
+            .filter(models.ConversationMessage.conversation_id == conv.id)
+            .filter(models.ConversationMessage.direction == "outbound")
+            .filter(models.ConversationMessage.message_type == message_type)
+            .order_by(models.ConversationMessage.created_at.desc())
+            .first()
+        )
+        if msg:
+            msg.subject = fu.subject
+            msg.body = fu.body
+            msg.created_at = fu.sent_at
+        else:
+            db.add(models.ConversationMessage(
+                conversation_id=conv.id,
+                direction="outbound",
+                message_type=message_type,
+                subject=fu.subject,
+                body=fu.body,
+                created_at=fu.sent_at,
+            ))
     db.commit()
     return {"ok": True}
 
@@ -472,6 +501,10 @@ async def research_refinement(data: schemas.ResearchRefinementRequest, db: Sessi
                 "current_rate": entertainer.current_rate,
             }
             live_data = discover_live_venues(payload, data.user_instruction)
+            discovery_source = "live_research_refinement"
+            if (not live_data or not live_data.get("venues")) and curated_opportunity_fallback:
+                live_data = curated_opportunity_fallback(payload, data.user_instruction)
+                discovery_source = "agent_curated_fallback"
             if live_data and live_data.get("venues"):
                 db.query(models.Venue).filter(models.Venue.entertainer_id == data.entertainer_id).delete()
                 for v in live_data["venues"]:
@@ -489,13 +522,23 @@ async def research_refinement(data: schemas.ResearchRefinementRequest, db: Sessi
                         specific_examples=json.dumps(v.get("specific_examples", [])),
                     ))
                 db.commit()
+                mirror_venues(data.entertainer_id, live_data["venues"], source=discovery_source)
                 await manager.broadcast({
                     "agent_id": "agent1",
                     "event_type": "complete",
                     "entertainer_id": data.entertainer_id,
-                    "message": f"Live discovery found {len(live_data['venues'])} venues from Gemini/Google/Eventbrite/social sources.",
+                    "message": (
+                        f"Live discovery found {len(live_data['venues'])} venues from Gemini/Google/Eventbrite/social sources."
+                        if discovery_source == "live_research_refinement"
+                        else f"Live provider quota unavailable; loaded {len(live_data['venues'])} agent-curated fallback opportunities."
+                    ),
                 })
-                return {"ok": True, "live_discovery": True, "venues_created": len(live_data["venues"])}
+                return {
+                    "ok": True,
+                    "live_discovery": discovery_source == "live_research_refinement",
+                    "fallback_discovery": discovery_source == "agent_curated_fallback",
+                    "venues_created": len(live_data["venues"]),
+                }
 
     return {"ok": True, "live_discovery": False}
 

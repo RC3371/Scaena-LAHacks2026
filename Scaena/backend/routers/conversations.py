@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend import models, schemas
+from backend.services.conversation_visibility import visible_conversation_messages
 from backend.websocket_manager import manager
 import json
 
@@ -15,14 +16,9 @@ def get_conversation(target_id: str, db: Session = Depends(get_db)):
         conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == target_id).first()
     if not conv:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    msgs = (
-        db.query(models.ConversationMessage)
-        .filter(models.ConversationMessage.conversation_id == conv.id)
-        .order_by(models.ConversationMessage.created_at)
-        .all()
-    )
     # Get initial pitch body for agent analysis
     pitch = db.query(models.Pitch).filter(models.Pitch.id == conv.pitch_id).first()
+    msgs = visible_conversation_messages(db, conv)
     return {
         "id": conv.id,
         "pitch_id": conv.pitch_id,
@@ -116,7 +112,14 @@ def save_analysis(data: schemas.ConversationAnalysisCreate, db: Session = Depend
 def booking_update(data: schemas.BookingConversationUpdate, db: Session = Depends(get_db)):
     booking = db.query(models.Booking).filter(models.Booking.id == data.booking_id).first()
     if booking:
-        booking.conversation_stage = data.conversation_stage
+        stage_aliases = {
+            "confirmed": "secured",
+            "logistics": "logistics_pending",
+            "pre_show": "show_scheduled",
+            "post_show": "rebook_ready",
+            "rebooking": "rebook_outreach_sent",
+        }
+        booking.conversation_stage = stage_aliases.get(data.conversation_stage, data.conversation_stage)
         db.commit()
     return {"ok": True}
 

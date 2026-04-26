@@ -5,6 +5,7 @@ import { client } from "../api/client";
 import { CollapsibleText } from "../components/CollapsibleText";
 import { useWebSocket } from "../hooks/useWebSocket";
 import type { Conversation, Pitch } from "../types";
+import { loadPageState, savePageState } from "../utils/pagePersistence";
 
 function Typewriter({ text, onComplete }: { text: string; onComplete?: () => void }) {
   const [displayed, setDisplayed] = useState("");
@@ -64,6 +65,8 @@ export function Outreach() {
   const syncInFlightRef = useRef(false);
   const { events } = useWebSocket();
 
+  const persistedKey = entertainerId ? `scaena.ui.outreach.${entertainerId}` : "";
+
   const loadGmailStatus = async (id: string) => {
     try {
       const status = await client.gmail.status(id);
@@ -84,8 +87,15 @@ export function Outreach() {
       const entertainers = await client.entertainers.active();
       if (!entertainers.length) return;
       const ent = entertainers[0];
+      const saved = loadPageState(`scaena.ui.outreach.${ent.id}`, {
+        activePitchId: null as string | null,
+        rightTab: "comms" as RightTab,
+        strategyInput: "",
+      });
       setEntertainerId(ent.id);
       setEntertainerName(ent.name);
+      setRightTab(saved.rightTab || "comms");
+      setStrategyInput(saved.strategyInput || "");
       if (ent.outreach_mode !== "auto_pitch") {
         await client.entertainers.update(ent.id, { outreach_mode: "auto_pitch" });
       }
@@ -93,7 +103,13 @@ export function Outreach() {
       await loadGmailStatus(ent.id);
       const pitchData = await client.outreach.pitches(ent.id);
       setPitches(pitchData);
-      if (pitchData.length) setActivePitchId(pitchData[0].id);
+      if (pitchData.length) {
+        setActivePitchId(
+          saved.activePitchId && pitchData.some((pitch) => pitch.id === saved.activePitchId)
+            ? saved.activePitchId
+            : pitchData[0].id
+        );
+      }
       const convMap: Record<string, Conversation> = {};
       await Promise.all(pitchData.slice(0, 12).map(async (p) => {
         try { convMap[p.id] = await client.conversations.getByPitch(p.id); } catch {}
@@ -101,6 +117,15 @@ export function Outreach() {
       setConversations(convMap);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!persistedKey) return;
+    savePageState(persistedKey, {
+      activePitchId,
+      rightTab,
+      strategyInput,
+    });
+  }, [activePitchId, rightTab, strategyInput, persistedKey]);
 
   // Watch for new agent2 events to refresh pitches
   useEffect(() => {
@@ -184,7 +209,7 @@ export function Outreach() {
     handleSyncReplies(true);
     const timer = window.setInterval(() => {
       handleSyncReplies(true);
-    }, 45000);
+    }, 10000);
     return () => window.clearInterval(timer);
   }, [entertainerId, gmailStatus?.connected, gmailStatus?.read_sync_enabled]);
 
@@ -386,28 +411,32 @@ export function Outreach() {
                 )}
               </div>
 
-              <AnimatePresence>
-                {gmailNotice && (
-                  <motion.div
-                    initial={{ opacity: 0, y: -8, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -8, scale: 0.98 }}
-                    className="absolute top-20 right-5 z-40 max-w-[460px] bg-black border-4 border-[var(--color-neon-cyan)] rounded-xl px-4 py-3 text-[12px] text-[var(--color-neon-cyan)] font-bold font-[var(--font-space)] uppercase shadow-[4px_4px_0px_0px_var(--color-neon-cyan)]"
-                  >
-                    {gmailNotice}
-                  </motion.div>
-                )}
-              </AnimatePresence>
-
               {/* Tab content */}
               <div className="flex-1 min-h-0 border-4 border-black bg-[var(--color-panel-bg)] rounded-2xl shadow-[4px_4px_0px_0px_var(--color-neon-cyan)] flex flex-col overflow-hidden">
 
                 {/* ── COMMS LOG TAB ── */}
                 {rightTab === "comms" && (
                   <div className="flex-1 flex flex-col overflow-hidden">
-                    <div className="p-3 border-b-4 border-black bg-[var(--color-neon-cyan)] flex justify-between items-center font-[var(--font-space)]">
-                      <h2 className="text-[13px] font-[var(--font-bungee)] text-black">COMMS LOG — {activePitch.venue_name.toUpperCase()}</h2>
-                      <div className="flex items-center gap-2">
+                    <div className="p-3 border-b-4 border-black bg-[var(--color-neon-cyan)] flex justify-between items-center gap-3 font-[var(--font-space)]">
+                      <h2 className="min-w-0 truncate text-[13px] font-[var(--font-bungee)] text-black">COMMS LOG — {activePitch.venue_name.toUpperCase()}</h2>
+                      <div className="flex min-w-0 shrink-0 items-center gap-2">
+                        <AnimatePresence mode="wait">
+                          {gmailNotice && (
+                            <motion.div
+                              key={gmailNotice}
+                              initial={{ opacity: 0, y: -4 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -4 }}
+                              className={`hidden sm:block max-w-[420px] overflow-hidden text-ellipsis whitespace-nowrap rounded-full border-2 border-black px-2.5 py-1 text-[11px] font-bold uppercase ${
+                                syncState === "error"
+                                  ? "bg-red-950 text-red-300"
+                                  : "bg-black text-[var(--color-neon-cyan)]"
+                              }`}
+                            >
+                              {gmailNotice}
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
                         {gmailStatus?.connected && gmailStatus.read_sync_enabled && (
                           <div
                             className="flex items-center gap-2 px-2.5 py-1 bg-white text-black border-2 border-black text-[11px] font-bold rounded-full"

@@ -12,6 +12,7 @@ load_dotenv()
 from backend.database import init_db, SessionLocal
 from backend import models
 from backend.services.pitch_generation import generate_pitch_for_venue
+from backend.services.booking_pipeline import checklist_json
 import json
 from datetime import datetime, timedelta
 
@@ -31,7 +32,7 @@ def seed():
         id="ent-joe-bruin",
         name="Joe Bruin",
         type="rapper",
-        genre="Hip-hop / College rap",
+        genre="Hip-hop / Rap",
         location="Los Angeles, CA",
         experience_years=2,
         social_followers=4800,
@@ -77,9 +78,9 @@ def seed():
     week1_scenarios = [
         ("UCLA Campus Events", "booked", "accepted", 400.0),
         ("USC Spring Concert", "responded", "negotiating", None),
-        ("The Roxy Theatre", "responded", "interested", None),
+        ("The Roxy Theatre", "booked", "accepted", 350.0),
         ("UCSD Sun God Festival", "sent", None, None),
-        ("Bardot Hollywood", "responded", "accepted", 300.0),
+        ("Bardot Hollywood", "booked", "accepted", 325.0),
         ("The Troubadour", "sent", None, None),
         ("Harvard & Stone", "sent", None, None),
         ("UC Berkeley Cal Performances", "responded", "rejected", None),
@@ -184,7 +185,7 @@ def seed():
 
     db.commit()
 
-    # Booking for UCLA Campus Events
+    # Booked demo interactions for Pipeline
     ucla_pitch = pitches_w1[0]
     ucla_conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == ucla_pitch.id).first()
     booking = models.Booking(
@@ -194,26 +195,60 @@ def seed():
         venue_name="UCLA Campus Events",
         agreed_rate=400.0,
         show_date=(datetime.utcnow() + timedelta(days=14)).strftime("%Y-%m-%d"),
-        conversation_stage="pre_show",
+        conversation_stage="show_scheduled",
+        logistics_checklist=checklist_json({
+            "date_confirmed": True,
+            "rate_confirmed": True,
+            "contact_confirmed": True,
+            "set_length_confirmed": True,
+            "load_in_confirmed": True,
+            "payment_confirmed": True,
+            "promo_assets_sent": True,
+            "contract_invoice_sent": True,
+        }),
         original_pitch_id=ucla_pitch.id,
     )
     db.add(booking)
-    db.commit()
 
-    # Booking for Bardot Hollywood
+    roxy_pitch = pitches_w1[2]
+    roxy_conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == roxy_pitch.id).first()
+    booking2 = models.Booking(
+        entertainer_id=joe.id,
+        pitch_id=roxy_pitch.id,
+        target_id=roxy_conv.id if roxy_conv else roxy_pitch.id,
+        venue_name="The Roxy Theatre",
+        agreed_rate=350.0,
+        show_date=(datetime.utcnow() + timedelta(days=18)).strftime("%Y-%m-%d"),
+        conversation_stage="logistics_pending",
+        logistics_checklist=checklist_json({
+            "date_confirmed": True,
+            "rate_confirmed": True,
+            "contact_confirmed": True,
+            "set_length_confirmed": True,
+            "payment_confirmed": True,
+        }),
+        original_pitch_id=roxy_pitch.id,
+    )
+    db.add(booking2)
+
     bardot_pitch = pitches_w1[4]
     bardot_conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == bardot_pitch.id).first()
-    booking2 = models.Booking(
+    booking3 = models.Booking(
         entertainer_id=joe.id,
         pitch_id=bardot_pitch.id,
         target_id=bardot_conv.id if bardot_conv else bardot_pitch.id,
         venue_name="Bardot Hollywood",
-        agreed_rate=300.0,
+        agreed_rate=325.0,
         show_date=(datetime.utcnow() + timedelta(days=21)).strftime("%Y-%m-%d"),
-        conversation_stage="confirmed",
+        conversation_stage="secured",
+        logistics_checklist=checklist_json({
+            "date_confirmed": True,
+            "rate_confirmed": True,
+            "contact_confirmed": True,
+        }),
         original_pitch_id=bardot_pitch.id,
     )
-    db.add(booking2)
+    db.add(booking3)
     db.commit()
 
     # Analytics snapshot
@@ -251,7 +286,7 @@ def seed():
     print("✓ Seeded Joe Bruin (rapper) with 3-week pipeline")
     print(f"  Entertainer ID: {entertainer_id}")
     print(f"  10 venues, 10 week-1 pitches")
-    print(f"  2 bookings (UCLA Campus Events $400, Bardot Hollywood $300)")
+    print(f"  3 bookings (UCLA Campus Events $400, The Roxy Theatre $350, Bardot Hollywood $325)")
     print(f"  Learning insights round 1")
 
 if __name__ == "__main__":

@@ -7,7 +7,7 @@ from agents.shared_models import (
     MarketResearchResult, LearningInsights, TriggerResearch, ResearchRefinement,
     AGENT2_ADDRESS
 )
-from agents.research_sources import discover_live_venues, live_sources_configured
+from agents.research_sources import curated_opportunity_fallback, discover_live_venues, live_sources_configured
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 _api_key = os.getenv("ASI1_API_KEY", "").strip()
@@ -124,13 +124,14 @@ async def research_for_entertainer(ctx: Context, entertainer: dict):
     user_instruction = user_refinements.get(eid, "")
     data = None
 
-    broadcast("working", f"Researching venues for {entertainer['name']}...", eid)
+    broadcast("working", f"Building a booking-agent opportunity list for {entertainer['name']}...", eid)
 
     if live_sources_configured():
-        broadcast("working", "Searching Gemini-grounded Google results, Eventbrite, Peerspace, and public social pages...", eid)
+        broadcast("working", "Searching Gemini-grounded Google results, campus/event pages, Eventbrite, Peerspace, and public social pages...", eid)
         data = discover_live_venues(entertainer, user_instruction)
         if not data:
-            broadcast("error", "Live discovery returned no usable results. Falling back to generated research.", eid)
+            broadcast("error", "Live discovery returned no usable results or hit provider quota. Loading agent-curated opportunities.", eid)
+            data = curated_opportunity_fallback(entertainer, user_instruction)
 
     if "data" not in locals() or data is None:
         if _simulation_mode:
@@ -141,15 +142,19 @@ async def research_for_entertainer(ctx: Context, entertainer: dict):
                 learning_ctx = f"Prior insights: best venues={prior.get('best_venue_types', [])}, best angle={prior.get('best_pitch_angle', '')}, optimal price=${prior.get('optimal_price', 0)}/show. Focus research on these."
             user_ctx = f"\nUser instruction: {user_instruction}" if user_instruction else ""
 
-            prompt = f"""Research gig opportunities for a {entertainer['type']} ({entertainer.get('genre','')}) in {entertainer.get('location','')}.
+            prompt = f"""You are replacing the manual research work of a celebrity booking agent.
+Research actionable gig opportunities for a {entertainer['type']} ({entertainer.get('genre','')}) in {entertainer.get('location','')}.
 Experience: {entertainer.get('experience_years', 2)} years. Following: {entertainer.get('social_followers', 0)}.
 {learning_ctx}{user_ctx}
+
+Only return venues, organizations, event series, or buyer surfaces that have a realistic path to booking.
+Prioritize buyer path, audience fit, likely rate/exposure value, and the next action Agent 2 should take.
 
 Return ONLY JSON:
 {{"market_rate_low": <number>, "market_rate_high": <number>, "recommended_rate": <number>,
 "pricing_trend": "rising|stable|falling",
 "venues": [{{"name": "<name>", "venue_type": "<type>", "typical_pay": "<$X-Y>", "fit_score": <0.0-1.0>,
-"contact_approach": "<how>", "why_fits": "<reason>", "specific_examples": ["<ex1>","<ex2>"]}}],
+"contact_approach": "<specific next action>", "why_fits": "<agent-quality reason>", "specific_examples": ["<source clue>","<buyer path>","<programming fit>"]}}],
 "market_insights": "<2-3 sentences>"}}"""
             try:
                 resp = _llm.chat.completions.create(

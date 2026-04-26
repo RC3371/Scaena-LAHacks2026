@@ -25,6 +25,22 @@ const VENUE_TYPES = [
 const inputCls = "w-full bg-black border-4 border-zinc-800 rounded-xl px-4 py-3 text-[15px] text-white placeholder-zinc-600 focus:outline-none focus:border-[var(--color-neon-purple)] transition-all font-sans";
 const labelCls = "text-[12px] font-bold text-zinc-400 uppercase tracking-widest font-[var(--font-space)] mb-2 block";
 
+const DEMO_PROFILE = {
+  name: "Joe Bruin",
+  type: "rapper",
+  genre: "Hip-hop / Rap",
+  location: "Los Angeles, CA",
+  current_rate: "350",
+  experience_years: "2",
+  social_followers: "4800",
+  instagram: "@joebruin_rap",
+  tiktok: "@joebruinofficial",
+  youtube: "Joe Bruin Rap",
+  website: "",
+  objectives: "Earn at least $10k, reach 1000+ people, and book college campuses, music festivals, music shows, and bars.",
+  preferred_venues: ["College / University", "Music Festival", "Music Venue", "Bar / Lounge", "Campus Concert"],
+};
+
 export function Onboarding() {
   const navigate = useNavigate();
   const [saving, setSaving] = useState(false);
@@ -36,21 +52,7 @@ export function Onboarding() {
   const [gmailSyncEnabled, setGmailSyncEnabled] = useState(false);
   const [existingId, setExistingId] = useState<string | null>(null);
 
-  const [form, setForm] = useState({
-    name: "",
-    type: "musician",
-    genre: "",
-    location: "",
-    current_rate: "",
-    experience_years: "",
-    social_followers: "",
-    instagram: "",
-    tiktok: "",
-    youtube: "",
-    website: "",
-    objectives: "",
-    preferred_venues: [] as string[],
-  });
+  const [form, setForm] = useState(DEMO_PROFILE);
 
   useEffect(() => {
     (async () => {
@@ -207,7 +209,7 @@ export function Onboarding() {
 
           <div>
             <label className={labelCls}>Genre / Style</label>
-            <input className={inputCls} placeholder="e.g. Hip-hop / College rap" value={form.genre} onChange={(e) => set("genre", e.target.value)} />
+            <input className={inputCls} placeholder="e.g. Hip-hop / Rap" value={form.genre} onChange={(e) => set("genre", e.target.value)} />
           </div>
 
           <div className="border-t-4 border-black pt-6">

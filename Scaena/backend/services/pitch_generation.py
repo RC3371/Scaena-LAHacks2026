@@ -52,6 +52,7 @@ def generate_reply_draft(
     latest_reply: str,
     analysis: dict[str, Any] | None = None,
     conversation_messages: list[dict[str, Any]] | None = None,
+    prior_context: str | None = None,
 ) -> dict[str, str]:
     """Generate the next email in an existing venue conversation."""
     greeting = greeting_for(venue, pitch)
@@ -59,17 +60,17 @@ def generate_reply_draft(
     if _asi1_ready():
         try:
             generated = {
-                **_generate_reply_with_asi1(entertainer, venue, pitch, latest_reply, analysis or {}, memory),
+                **_generate_reply_with_asi1(entertainer, venue, pitch, latest_reply, analysis or {}, memory, prior_context),
                 "generation_source": "asi1",
             }
             return _normalize_pitch(generated, entertainer, greeting)
         except Exception as exc:
-            fallback = _fallback_reply_draft(entertainer, venue, pitch, latest_reply, analysis or {}, memory)
+            fallback = _fallback_reply_draft(entertainer, venue, pitch, latest_reply, analysis or {}, memory, prior_context)
             fallback["generation_source"] = "fallback"
             fallback["generation_error"] = _safe_error(exc)
             return _normalize_pitch(fallback, entertainer, greeting)
 
-    fallback = _fallback_reply_draft(entertainer, venue, pitch, latest_reply, analysis or {}, memory)
+    fallback = _fallback_reply_draft(entertainer, venue, pitch, latest_reply, analysis or {}, memory, prior_context)
     fallback["generation_source"] = "fallback"
     return _normalize_pitch(fallback, entertainer, greeting)
 
@@ -78,6 +79,7 @@ def generate_rebook_pitch(
     entertainer: dict[str, Any],
     booking: dict[str, Any],
     rate: float | None = None,
+    prior_context: str | None = None,
 ) -> dict[str, str]:
     """Generate a rebooking email after a successful previous show."""
     recommended_rate = float(rate or booking.get("agreed_rate") or entertainer.get("current_rate") or 350)
@@ -86,17 +88,17 @@ def generate_rebook_pitch(
     if _asi1_ready():
         try:
             generated = {
-                **_generate_rebook_with_asi1(entertainer, booking, recommended_rate),
+                **_generate_rebook_with_asi1(entertainer, booking, recommended_rate, prior_context),
                 "generation_source": "asi1",
             }
             return _normalize_pitch(generated, entertainer, greeting)
         except Exception as exc:
-            fallback = _fallback_rebook_pitch(entertainer, booking, recommended_rate)
+            fallback = _fallback_rebook_pitch(entertainer, booking, recommended_rate, prior_context)
             fallback["generation_source"] = "fallback"
             fallback["generation_error"] = _safe_error(exc)
             return _normalize_pitch(fallback, entertainer, greeting)
 
-    fallback = _fallback_rebook_pitch(entertainer, booking, recommended_rate)
+    fallback = _fallback_rebook_pitch(entertainer, booking, recommended_rate, prior_context)
     fallback["generation_source"] = "fallback"
     return _normalize_pitch(fallback, entertainer, greeting)
 
@@ -148,6 +150,7 @@ def _generate_reply_with_asi1(
     latest_reply: str,
     analysis: dict[str, Any],
     memory: dict[str, Any],
+    prior_context: str | None,
 ) -> dict[str, str]:
     client = OpenAI(
         base_url=os.getenv("ASI1_BASE_URL", "https://api.asi1.ai/v1"),
@@ -183,6 +186,9 @@ Venue/thread:
 Conversation memory:
 {memory_as_prompt(memory)}
 
+Prior same venue/company context:
+{prior_context.strip() if prior_context and prior_context.strip() else "No prior same-venue history found."}
+
 Agent 3 read:
 - Interest level: {analysis.get("interest_level", "")}
 - Response type: {analysis.get("response_type", "")}
@@ -197,6 +203,7 @@ Requirements:
 - Keep the greeting consistent with the recipient/contact above. Keep the signoff consistent with the sender/team below.
 - Do not ask for information the recipient already gave in the latest reply.
 - Honor every agreement in conversation memory, especially agreed date, agreed rate, EPK/materials already sent, and any concessions already made.
+- Use prior same-venue context to remember the relationship and avoid repeating old questions, but do not treat old dates/rates as current unless the latest thread confirms them.
 - Follow the price policy in conversation memory. Accept venue counters inside the flexible acceptance range. If a counter is below that range, politely counter at the floor instead of accepting it.
 - Ask at most one concise question. Ask two only if both are true blockers.
 - Do not ask for dates, rate, EPK, or confirmation if conversation memory already contains them.
@@ -205,6 +212,7 @@ Requirements:
 {date_guidance}- If they ask about price, answer clearly with the rate and one flexible option.
 - If they are interested but have not suggested a date, move toward dates, reel/EPK, or a quick call.
 - If they reject, be gracious and leave the door open.
+- Avoid closed-door wording about ending the thread or waiting for a better season. Prefer simple open language like "Let us know if you are interested in a future date."
 - Sign off exactly with:
   Sincerely,
   {team_name_for(artist_name)}
@@ -235,6 +243,7 @@ def _generate_rebook_with_asi1(
     entertainer: dict[str, Any],
     booking: dict[str, Any],
     rate: float,
+    prior_context: str | None,
 ) -> dict[str, str]:
     client = OpenAI(
         base_url=os.getenv("ASI1_BASE_URL", "https://api.asi1.ai/v1"),
@@ -257,10 +266,14 @@ Previous booking:
 - Show summary: {booking.get("show_summary", "")}
 - Current booking stage: {booking.get("conversation_stage", "")}
 
+Prior same venue/company context:
+{prior_context.strip() if prior_context and prior_context.strip() else "No prior same-venue history found."}
+
 Directive:
 - This is not an initial booking pitch.
 - Ask whether {venue_name} would like to bring {artist_name} back for another show.
 - Reference that they have already worked together.
+- Use the prior context to stay consistent with earlier names, rates, dates, and logistics, but do not invent new commitments.
 - Keep the tone human, warm, and specific.
 - Under 120 words.
 - Write from {team_name_for(artist_name)}'s perspective using "we" and "our team".
@@ -269,6 +282,7 @@ Directive:
   Sincerely,
   {team_name_for(artist_name)}
 - Do not use em dashes or en dashes.
+- Avoid closed-door wording about ending the thread or waiting for a better season.
 - Return ONLY valid JSON in this shape: {{"subject":"...","body":"..."}}"""
     response = client.chat.completions.create(
         model=os.getenv("ASI1_MODEL", "asi1-mini"),
@@ -339,6 +353,7 @@ Requirements:
 - Do not use em dashes or en dashes. Use commas, periods, parentheses, or simple hyphens instead.
 - Do not include audience counts, venue capacities, dates, awards, or hard metrics unless they appear in the artist profile or target venue notes above.
 - Do not use generic lines like "I came across your venue" or "my act would be a great fit".
+- Avoid closed-door wording about ending the thread or waiting for a better season.
 - Do not invent hard claims, dates, or numbers that are not in the profile.
 - Return ONLY valid JSON in this shape: {{"subject":"...","body":"..."}}"""
 
@@ -648,7 +663,12 @@ def greeting_for(venue: dict[str, Any] | None, pitch: dict[str, Any] | None = No
     recipient_name = recipient_name_for(venue, pitch)
     if recipient_name:
         return f"Hi {recipient_name},"
-    venue_name = str((venue or {}).get("name") or (pitch or {}).get("venue_name") or "").strip()
+    venue_name = str(
+        (venue or {}).get("name")
+        or (venue or {}).get("venue_name")
+        or (pitch or {}).get("venue_name")
+        or ""
+    ).strip()
     if venue_name:
         return f"Hi {venue_name} team,"
     return "Hi there,"
@@ -998,6 +1018,7 @@ def _fallback_reply_draft(
     latest_reply: str,
     analysis: dict[str, Any],
     memory: dict[str, Any],
+    prior_context: str | None = None,
 ) -> dict[str, str]:
     name = entertainer.get("name", "The Artist")
     team_name = team_name_for(name)
@@ -1020,6 +1041,11 @@ def _fallback_reply_draft(
     subject = pitch.get("pitch_subject") or f"Booking inquiry for {name}"
     if not str(subject).lower().startswith("re:"):
         subject = f"Re: {subject}"
+    relationship_line = (
+        f"\n\nWe also have the previous {venue_name} booking notes on file, so we will keep this consistent with what your team has already shared."
+        if prior_context and str(prior_context).strip()
+        else ""
+    )
 
     if memory.get("rate_is_below_flexible_range"):
         body = f"Hi {venue_name} team,\n\nThanks for being clear on budget. For {name}, {rate_phrase}.\n\nIf that works on your end, we can keep the next step simple and lock the remaining logistics.\n\nSincerely,\n{team_name}"
@@ -1027,11 +1053,11 @@ def _fallback_reply_draft(
         epk_line = "We can send the EPK/reel over as well." if memory.get("requested_epk") and not memory.get("sent_epk") else ""
         body = f"Hi {venue_name} team,\n\nThanks for sending that over. We have the date noted for {name}, and {rate_phrase}.\n\n{epk_line}{' ' if epk_line and logistics_question else ''}{logistics_question}\n\nSincerely,\n{team_name}"
     elif response_type == "accepted" or any(word in reply_lower for word in ["love", "interested", "available", "book"]):
-        body = f"Hi {venue_name} team,\n\nThanks for getting back to us. We'd love to move this forward for {name}.\n\nWe can keep the rate at {rate}/show. {logistics_question or 'We can send over the EPK and a couple of date options if helpful.'}\n\nSincerely,\n{team_name}"
+        body = f"Hi {venue_name} team,\n\nThanks for getting back to us. We'd love to move this forward for {name}.{relationship_line}\n\nWe can keep the rate at {rate}/show. {logistics_question or 'We can send over the EPK and a couple of date options if helpful.'}\n\nSincerely,\n{team_name}"
     elif response_type == "negotiating" or any(word in reply_lower for word in ["budget", "rate", "price", "cost", "$"]):
         body = f"Hi {venue_name} team,\n\nThanks for the note. For {name}, {rate_phrase}.\n\nIf that still works on your end, {logistics_question.lower() if logistics_question else 'we can move into logistics next.'}\n\nSincerely,\n{team_name}"
     elif response_type == "rejected":
-        body = f"Hi {venue_name} team,\n\nThanks for letting us know. We appreciate you taking a look at {name}.\n\nWe will keep an eye on future programming windows and would be happy to reconnect if a hip-hop slot opens up later in the season.\n\nSincerely,\n{team_name}"
+        body = f"Hi {venue_name} team,\n\nThanks for letting us know. We appreciate you taking a look at {name}.\n\nLet us know if you are interested in a future date or if a performance slot opens up later in the season.\n\nSincerely,\n{team_name}"
     else:
         body = f"Hi {venue_name} team,\n\nThanks for getting back to us. Happy to share more on {name}: he brings a tight live set, active promo support, and a format that can flex for your room.\n\nWe can keep the rate at {rate}/show. {logistics_question or 'Would a reel or EPK be helpful as the next step?'}\n\nSincerely,\n{team_name}"
 
@@ -1042,6 +1068,7 @@ def _fallback_rebook_pitch(
     entertainer: dict[str, Any],
     booking: dict[str, Any],
     rate: float,
+    prior_context: str | None = None,
 ) -> dict[str, str]:
     name = entertainer.get("name", "The Artist")
     team_name = team_name_for(name)
@@ -1052,10 +1079,15 @@ def _fallback_rebook_pitch(
         if summary
         else "\n\nThe last booking felt like a strong fit, and our team would love to build on that momentum with a fresh set."
     )
+    history_line = (
+        "\n\nWe reviewed the previous thread so we can keep the rate, logistics, and tone consistent with what your team already shared."
+        if prior_context and str(prior_context).strip()
+        else ""
+    )
     subject = f"Rebooking {name} at {venue_name}"
     body = (
         f"Hi {venue_name} team,\n\n"
-        f"Thanks again for working with {name}.{context}\n\n"
+        f"Thanks again for working with {name}.{context}{history_line}\n\n"
         f"Would you be open to bringing him back for another date? We can share updated material, a short promo plan, "
         f"and a few available windows. We can also stay around the previous ${rate:.0f}/show range if that still works for your programming.\n\n"
         f"Sincerely,\n{team_name}"

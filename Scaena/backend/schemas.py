@@ -308,6 +308,30 @@ class BookingConversationUpdate(BaseModel):
     timestamp: str
 
 
+class BookingPipelineUpdate(BaseModel):
+    conversation_stage: Optional[str] = None
+    agreed_rate: Optional[float] = None
+    show_date: Optional[str] = None
+    logistics_checklist: Optional[Dict[str, bool]] = None
+    show_summary: Optional[str] = None
+    post_show_notes: Optional[str] = None
+    crowd_size: Optional[int] = None
+    audience_reaction: Optional[str] = None
+    payout_received: Optional[bool] = None
+    venue_satisfaction: Optional[str] = None
+    rebook_recommended: Optional[bool] = None
+    next_reminder_at: Optional[datetime] = None
+
+
+class PerformanceResolve(BaseModel):
+    post_show_notes: Optional[str] = None
+    crowd_size: Optional[int] = None
+    audience_reaction: Optional[str] = None
+    payout_received: Optional[bool] = None
+    venue_satisfaction: Optional[str] = None
+    rebook_recommended: Optional[bool] = True
+
+
 class BookingOut(BaseModel):
     id: str
     entertainer_id: str
@@ -317,8 +341,23 @@ class BookingOut(BaseModel):
     agreed_rate: Optional[float]
     show_date: Optional[str]
     conversation_stage: str
+    logistics_checklist: Optional[Any] = None
+    show_summary: Optional[str] = None
+    post_show_notes: Optional[str] = None
+    crowd_size: Optional[int] = None
+    audience_reaction: Optional[str] = None
+    payout_received: Optional[bool] = None
+    venue_satisfaction: Optional[str] = None
+    rebook_recommended: Optional[bool] = None
+    next_reminder_at: Optional[datetime] = None
+    performance_completed_at: Optional[datetime] = None
     rebooking_sent: bool
+    pipeline_health: Optional[str] = None
+    pipeline_reminders: Optional[Any] = None
+    next_action: Optional[str] = None
+    days_until_show: Optional[int] = None
     created_at: datetime
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

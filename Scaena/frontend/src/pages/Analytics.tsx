@@ -4,6 +4,7 @@ import { Terminal, Check, X, RefreshCw } from "lucide-react";
 import { client } from "../api/client";
 import { useWebSocket } from "../hooks/useWebSocket";
 import type { Insight } from "../types";
+import { loadPageState, savePageState } from "../utils/pagePersistence";
 
 interface ProposedChange {
   id: string;
@@ -14,10 +15,20 @@ interface ProposedChange {
   reason: string;
 }
 
+function parseInsightList(value?: string) {
+  if (!value) return "";
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.join(", ");
+  } catch {}
+  return value;
+}
+
 export function Analytics() {
   const [thoughts, setThoughts] = useState<string[]>([]);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [summary, setSummary] = useState<any>(null);
+  const [chatIntel, setChatIntel] = useState<any>(null);
   const [entertainerId, setEntertainerId] = useState("");
   const [autoMode, setAutoMode] = useState(true);
   const [proposedChanges, setProposedChanges] = useState<ProposedChange[]>([]);
@@ -25,67 +36,107 @@ export function Analytics() {
   const [deniedIds, setDeniedIds] = useState<Set<string>>(new Set());
   const { events } = useWebSocket();
 
+  const loadAnalytics = async (id: string, ent: any) => {
+    const ingest = await client.analytics.autoIngestChatHistory(id).catch(() => null);
+    const [insightData, summaryData] = await Promise.all([
+      client.analytics.insights(id),
+      client.analytics.summary(id),
+    ]);
+    setChatIntel(ingest);
+    setInsights(insightData);
+    setSummary(summaryData);
+
+    const latest = insightData[0];
+    const autoThoughts = [
+      `> AUTO-INGESTED ${ingest?.messages_scanned ?? 0} CHAT MESSAGES`,
+      `> SCANNED ${ingest?.conversations_scanned ?? 0} OUTREACH THREADS`,
+      `> RECIPIENT MESSAGES :: ${ingest?.inbound_messages ?? 0}`,
+      `> SOURCE :: GMAIL + OUTREACH COMMS LOG`,
+    ];
+
+    if (latest) {
+      const bestVenues = parseInsightList(latest.best_venue_types) || "TBD";
+      const avoid = parseInsightList(latest.avoid_segments) || "NONE";
+      setThoughts([
+        ...autoThoughts,
+        `> LOADED ${insightData.length} INSIGHT ROUNDS`,
+        `> BEST VENUE TYPE :: ${bestVenues}`,
+        `> OPTIMAL PRICE :: $${latest.optimal_price || 0}/SHOW`,
+        `> BEST ANGLE :: ${(latest.best_pitch_angle || "").substring(0, 40).toUpperCase()}`,
+        `> AVOID :: ${avoid.toUpperCase()}`,
+      ]);
+
+      const changes: ProposedChange[] = [];
+      if (latest.optimal_price && ent.current_rate && Math.abs(latest.optimal_price - ent.current_rate) > 25) {
+        changes.push({
+          id: "rate",
+          field: "current_rate",
+          label: "Minimum Rate",
+          current: `$${ent.current_rate}/show`,
+          proposed: `$${latest.optimal_price}/show`,
+          reason: "Based on accepted booking prices and negotiation data from chat history.",
+        });
+      }
+      const bestVenueValue = parseInsightList(latest.best_venue_types);
+      if (bestVenueValue && ent.genre && !ent.genre.toLowerCase().includes(bestVenueValue.toLowerCase())) {
+        changes.push({
+          id: "focus",
+          field: "genre",
+          label: "Target Focus",
+          current: ent.genre,
+          proposed: `${ent.genre}, ${bestVenueValue}`,
+          reason: `${bestVenueValue} conversations are showing the strongest response signal.`,
+        });
+      }
+      if (latest.best_pitch_angle) {
+        changes.push({
+          id: "pitch",
+          field: "highlights",
+          label: "Pitch Strategy",
+          current: "General approach",
+          proposed: latest.best_pitch_angle,
+          reason: "Agent 3 detected this pattern from Outreach/Gmail thread history.",
+        });
+      }
+      setProposedChanges(changes);
+    } else {
+      setThoughts([
+        ...autoThoughts,
+        "> WATCHING OUTREACH/GMAIL HISTORY AUTOMATICALLY",
+        "> INSIGHTS WILL APPEAR AS REAL THREADS ACCUMULATE",
+      ]);
+      setProposedChanges([]);
+    }
+  };
+
   useEffect(() => {
     (async () => {
       const entertainers = await client.entertainers.active();
       if (!entertainers.length) return;
       const ent = entertainers[0];
+      const saved = loadPageState(`scaena.ui.analytics.${ent.id}`, {
+        autoMode: true,
+        thoughts: [] as string[],
+        approvedIds: [] as string[],
+        deniedIds: [] as string[],
+      });
       setEntertainerId(ent.id);
-      const [insightData, summaryData] = await Promise.all([
-        client.analytics.insights(ent.id),
-        client.analytics.summary(ent.id),
-      ]);
-      setInsights(insightData);
-      setSummary(summaryData);
-
-      if (insightData.length) {
-        const latest = insightData[insightData.length - 1];
-        setThoughts([
-          `> LOADED ${insightData.length} INSIGHT ROUNDS`,
-          `> BEST VENUE TYPE :: ${latest.best_venue_types || "TBD"}`,
-          `> OPTIMAL PRICE :: $${latest.optimal_price || 0}/SHOW`,
-          `> BEST ANGLE :: ${(latest.best_pitch_angle || "").substring(0, 35).toUpperCase()}`,
-          `> AVOID :: ${(latest.avoid_segments || "NONE").toUpperCase()}`,
-          "> MATRIX UPDATED :: AGENTS 1 & 2 SYNCED",
-        ]);
-        // Build proposed changes from insights
-        const changes: ProposedChange[] = [];
-        if (latest.optimal_price && ent.current_rate && Math.abs(latest.optimal_price - ent.current_rate) > 25) {
-          changes.push({
-            id: "rate",
-            field: "current_rate",
-            label: "Minimum Rate",
-            current: `$${ent.current_rate}/show`,
-            proposed: `$${latest.optimal_price}/show`,
-            reason: "Based on accepted booking prices and negotiation data.",
-          });
-        }
-        if (latest.best_venue_types && ent.genre && !ent.genre.toLowerCase().includes(latest.best_venue_types.toLowerCase())) {
-          changes.push({
-            id: "focus",
-            field: "genre",
-            label: "Target Focus",
-            current: ent.genre,
-            proposed: `${ent.genre}, ${latest.best_venue_types}`,
-            reason: `${latest.best_venue_types} venues showing highest conversion rate.`,
-          });
-        }
-        if (latest.best_pitch_angle) {
-          changes.push({
-            id: "pitch",
-            field: "highlights",
-            label: "Pitch Strategy",
-            current: "General approach",
-            proposed: latest.best_pitch_angle,
-            reason: "Agent 3 detected this angle converts 2x better.",
-          });
-        }
-        setProposedChanges(changes);
-      } else {
-        setThoughts(["> NO INSIGHTS YET :: NEED 3+ REPLIES", "> LOG VENUE REPLIES IN OUTREACH TAB", "> AGENT 3 WILL ANALYZE AUTOMATICALLY"]);
-      }
+      setAutoMode(saved.autoMode);
+      setApprovedIds(new Set(saved.approvedIds || []));
+      setDeniedIds(new Set(saved.deniedIds || []));
+      await loadAnalytics(ent.id, ent);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!entertainerId) return;
+    savePageState(`scaena.ui.analytics.${entertainerId}`, {
+      autoMode,
+      thoughts,
+      approvedIds: Array.from(approvedIds),
+      deniedIds: Array.from(deniedIds),
+    });
+  }, [autoMode, thoughts, approvedIds, deniedIds, entertainerId]);
 
   useEffect(() => {
     const thinkingEvents = events.filter(
@@ -108,7 +159,17 @@ export function Analytics() {
     setDeniedIds((prev) => new Set([...prev, id]));
   };
 
-  const latestInsight = insights[insights.length - 1];
+  useEffect(() => {
+    if (!autoMode || !entertainerId) return;
+    const timer = window.setInterval(async () => {
+      const entertainers = await client.entertainers.active();
+      const ent = entertainers.find((item) => item.id === entertainerId) || entertainers[0];
+      if (ent) await loadAnalytics(entertainerId, ent);
+    }, 30000);
+    return () => window.clearInterval(timer);
+  }, [autoMode, entertainerId]);
+
+  const latestInsight = insights[0];
   const pendingChanges = proposedChanges.filter((c) => !approvedIds.has(c.id) && !deniedIds.has(c.id));
 
   return (
@@ -189,6 +250,20 @@ export function Analytics() {
           <div className="p-7">
             <h2 className="text-2xl font-[var(--font-bungee)] text-[var(--color-neon-green)] mb-7 bg-black px-6 py-2 rounded-full border-2 border-[var(--color-neon-green)] inline-block">EXTRACTED INTEL</h2>
 
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+              {[
+                ["THREADS", chatIntel?.conversations_scanned ?? 0],
+                ["MESSAGES", chatIntel?.messages_scanned ?? 0],
+                ["RECIPIENT", chatIntel?.inbound_messages ?? 0],
+                ["TEAM", chatIntel?.outbound_messages ?? 0],
+              ].map(([label, value]) => (
+                <div key={label} className="bg-black border-2 border-[var(--color-neon-green)] rounded-xl p-3">
+                  <p className="text-[10px] font-[var(--font-space)] text-zinc-500 font-bold uppercase">{label}</p>
+                  <p className="text-xl font-[var(--font-bungee)] text-[var(--color-neon-green)]">{value}</p>
+                </div>
+              ))}
+            </div>
+
             {latestInsight ? (
               <div className="space-y-5">
                 {/* Positive Signals */}
@@ -200,7 +275,7 @@ export function Analytics() {
                     <div className="flex items-start gap-3">
                       <div className="w-2.5 h-2.5 rounded-sm bg-[var(--color-neon-green)] mt-1.5 shrink-0" />
                       <p className="text-[15px] text-zinc-100 leading-relaxed">
-                        Best venue type: <span className="text-[var(--color-neon-green)] font-[var(--font-bungee)] text-xl mx-1">{latestInsight.best_venue_types}</span>
+                        Best venue type: <span className="text-[var(--color-neon-green)] font-[var(--font-bungee)] text-xl mx-1">{parseInsightList(latestInsight.best_venue_types)}</span>
                       </p>
                     </div>
                     <div className="flex items-start gap-3">
@@ -228,7 +303,7 @@ export function Analytics() {
                     </h3>
                     <div className="flex items-start gap-3">
                       <div className="w-2.5 h-2.5 rounded-sm bg-[var(--color-neon-green)] mt-1.5 shrink-0" />
-                      <p className="text-[15px] text-zinc-100 leading-relaxed">Avoid: <span className="text-[var(--color-neon-green)] font-semibold">{latestInsight.avoid_segments}</span></p>
+                      <p className="text-[15px] text-zinc-100 leading-relaxed">Avoid: <span className="text-[var(--color-neon-green)] font-semibold">{parseInsightList(latestInsight.avoid_segments)}</span></p>
                     </div>
                   </div>
                 )}
@@ -242,8 +317,8 @@ export function Analytics() {
               </div>
             ) : (
               <div className="text-[14px] font-bold font-[var(--font-space)] text-[var(--color-neon-green)] mt-4 uppercase bg-black p-5 rounded-xl border-2 border-dashed border-[var(--color-neon-green)]">
-                AGENT 3 NEEDS 3+ REPLIES TO GENERATE INSIGHTS.<br />
-                <span className="text-zinc-600 text-[12px] mt-1 block">LOG REPLIES IN THE OUTREACH TAB.</span>
+                AGENT 3 IS READING OUTREACH/GMAIL CHAT HISTORY AUTOMATICALLY.<br />
+                <span className="text-zinc-600 text-[12px] mt-1 block">NO MANUAL REPLY LOGGING REQUIRED.</span>
               </div>
             )}
 
@@ -308,8 +383,9 @@ export function Analytics() {
               <button
                 onClick={async () => {
                   if (!entertainerId) return;
-                  const [d, s] = await Promise.all([client.analytics.insights(entertainerId), client.analytics.summary(entertainerId)]);
-                  setInsights(d); setSummary(s);
+                  const entertainers = await client.entertainers.active();
+                  const ent = entertainers.find((item) => item.id === entertainerId) || entertainers[0];
+                  if (ent) await loadAnalytics(entertainerId, ent);
                 }}
                 className="px-6 py-3 bg-[var(--color-neon-green)] text-black border-4 border-black font-[var(--font-bungee)] rounded-xl hover:bg-white hover:-translate-y-1 hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-all text-[15px]"
               >

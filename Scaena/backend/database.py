@@ -50,6 +50,18 @@ def _ensure_sqlite_columns():
             "gmail_thread_id": "gmail_thread_id VARCHAR",
             "from_email": "from_email VARCHAR",
         },
+        "bookings": {
+            "logistics_checklist": "logistics_checklist TEXT",
+            "post_show_notes": "post_show_notes TEXT",
+            "crowd_size": "crowd_size INTEGER",
+            "audience_reaction": "audience_reaction VARCHAR",
+            "payout_received": "payout_received BOOLEAN DEFAULT 0",
+            "venue_satisfaction": "venue_satisfaction VARCHAR",
+            "rebook_recommended": "rebook_recommended BOOLEAN",
+            "next_reminder_at": "next_reminder_at DATETIME",
+            "performance_completed_at": "performance_completed_at DATETIME",
+            "updated_at": "updated_at DATETIME",
+        },
     }
 
     with engine.begin() as conn:

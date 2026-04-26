@@ -175,11 +175,21 @@ class Booking(Base):
     venue_name = Column(String)
     agreed_rate = Column(Float, nullable=True)
     show_date = Column(String, nullable=True)
-    conversation_stage = Column(String, default="confirmed")
+    conversation_stage = Column(String, default="secured")
+    logistics_checklist = Column(Text, nullable=True)
     original_pitch_id = Column(String, nullable=True)
     show_summary = Column(Text, nullable=True)
+    post_show_notes = Column(Text, nullable=True)
+    crowd_size = Column(Integer, nullable=True)
+    audience_reaction = Column(String, nullable=True)
+    payout_received = Column(Boolean, default=False)
+    venue_satisfaction = Column(String, nullable=True)
+    rebook_recommended = Column(Boolean, nullable=True)
+    next_reminder_at = Column(DateTime, nullable=True)
+    performance_completed_at = Column(DateTime, nullable=True)
     rebooking_sent = Column(Boolean, default=False)
     created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
 class BookingMessage(Base):

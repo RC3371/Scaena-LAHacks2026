@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend import models, schemas
+from backend.services.mongo_store import mirror_venues
 from typing import List
 import json
 
@@ -28,6 +29,7 @@ def bulk_upsert_venues(data: schemas.VenueBulkCreate, db: Session = Depends(get_
         db.add(venue)
         created += 1
     db.commit()
+    mirror_venues(data.entertainer_id, data.venues, source="agent1_bulk")
     return {"created": created}
 
 

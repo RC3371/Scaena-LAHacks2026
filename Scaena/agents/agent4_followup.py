@@ -41,18 +41,30 @@ _MOCK_FOLLOWUPS = {
 }
 
 _MOCK_BOOKING_MSGS = {
-    "confirmed": {
+    "secured": {
         "subject": "Confirmed logistics for {name} at {venue}",
         "body": "Hi,\n\nGreat news, excited to confirm the booking for {name}! A few quick logistics questions:\n\n• What time should he arrive for load-in/sound check?\n• Preferred payment method (Venmo, check, or invoice)?\n• Any specific set length or content guidelines?\n\nLooking forward to it!\n\nSincerely,\n{team}",
     },
-    "pre_show": {
+    "logistics_pending": {
+        "subject": "Logistics check for {name} at {venue}",
+        "body": "Hi,\n\nWe are tightening up the show details for {name} at {venue}. Could you confirm load-in time, set length, payment method, and whether you need any promo assets from our side?\n\nSincerely,\n{team}",
+    },
+    "show_scheduled": {
         "subject": "Quick check-in before {venue}",
         "body": "Hi,\n\nJust checking in ahead of the show. Everything on our end is confirmed and {name} is looking forward to it.\n\nLet us know if anything has changed or if there is anything he should know before arriving.\n\nSincerely,\n{team}",
     },
-    "post_show": {
+    "post_show_followup": {
         "subject": "Thanks, {venue}! Great show",
         "body": "Hi,\n\nJust wanted to say thank you. Last night was a blast, and {name} had a great time with the crowd.\n\nWe would love to bring him back for another show whenever your schedule allows. Worth keeping him in mind for future bookings?\n\nSincerely,\n{team}",
     },
+}
+
+_STAGE_ALIASES = {
+    "confirmed": "secured",
+    "logistics": "logistics_pending",
+    "pre_show": "show_scheduled",
+    "post_show": "rebook_ready",
+    "rebooking": "rebook_outreach_sent",
 }
 
 
@@ -199,7 +211,7 @@ async def handle_followup(ctx: Context, pitch: dict):
 
 
 async def handle_booking_conversation(ctx: Context, booking: dict):
-    stage = booking.get("conversation_stage", "confirmed")
+    stage = _STAGE_ALIASES.get(booking.get("conversation_stage", "secured"), booking.get("conversation_stage", "secured"))
     eid = booking["entertainer_id"]
     target_id = booking["target_id"]
     booking_id = booking["id"]
@@ -216,9 +228,10 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
         message = _format_template(template, name, venue)
     else:
         stage_prompts = {
-            "confirmed": f"Confirm logistics with {venue}: arrival, sound check, payment. 100 words max.",
-            "pre_show": f"Check-in 2 days before show at {venue}. 60 words max.",
-            "post_show": f"Post-show thank you to {venue}, hint at rebooking. 80 words max.",
+            "secured": f"Confirm logistics with {venue}: arrival, sound check, payment. 100 words max.",
+            "logistics_pending": f"Ask {venue} to confirm remaining logistics: load-in, set length, payment, promo assets. 90 words max.",
+            "show_scheduled": f"Check in 2 days before show at {venue}. 60 words max.",
+            "post_show_followup": f"Post-show thank you to {venue}, hint at rebooking. 80 words max.",
         }
         prompt = f"{stage_prompts[stage]}\nPerformer: {name}\nWrite from {team_name_for(name)}'s perspective using we/our team, not from the artist personally.\nSign off exactly with: Sincerely, then {team_name_for(name)} on the next line.\nDo not use em dashes or en dashes.\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
         try:
@@ -231,7 +244,7 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
             message = json.loads(raw)
         except Exception as e:
             ctx.logger.error(f"Booking msg gen failed: {e}")
-            template = _MOCK_BOOKING_MSGS.get(stage, _MOCK_BOOKING_MSGS["confirmed"])
+            template = _MOCK_BOOKING_MSGS.get(stage, _MOCK_BOOKING_MSGS["secured"])
             message = _format_template(template, name, venue)
 
     message = _normalize_message(message, name)

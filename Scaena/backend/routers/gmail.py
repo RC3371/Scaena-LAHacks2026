@@ -19,11 +19,18 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend.database import get_db
+from backend.services.conversation_context import (
+    conversation_messages_payload as shared_conversation_messages_payload,
+    prior_venue_context,
+)
 from backend.services.booking_pipeline import ensure_booking_for_pitch
+from backend.services.mongo_store import mirror_agent_event, mirror_pitch_sent
 from backend.services.pitch_generation import (
     build_conversation_memory,
     conversation_completion_status,
+    ensure_team_signoff,
     generate_reply_draft,
+    greeting_for,
     remove_long_dashes,
     reply_has_specific_date,
 )
@@ -318,8 +325,22 @@ def _mark_pitch_sent(
             .first()
         )
         if outbound:
+            outbound.subject = pitch.pitch_subject or outbound.subject
+            outbound.body = pitch.pitch_body or outbound.body
             outbound.gmail_message_id = message_id or outbound.gmail_message_id
             outbound.gmail_thread_id = thread_id or outbound.gmail_thread_id
+            outbound.created_at = pitch.sent_at or outbound.created_at
+        else:
+            db.add(models.ConversationMessage(
+                conversation_id=conv.id,
+                direction="outbound",
+                message_type="initial_pitch",
+                subject=pitch.pitch_subject,
+                body=pitch.pitch_body or "",
+                gmail_message_id=message_id,
+                gmail_thread_id=thread_id,
+                created_at=pitch.sent_at,
+            ))
     db.commit()
 
 
@@ -337,6 +358,7 @@ async def _broadcast_event(db: Session, event: dict):
         )}),
     ))
     db.commit()
+    mirror_agent_event(event)
 
 
 def _conversation_for_pitch(pitch: models.Pitch, db: Session) -> models.Conversation:
@@ -443,21 +465,24 @@ def _message_body(message: dict) -> str:
 
 
 def _conversation_messages_payload(db: Session, conv: models.Conversation) -> list[dict]:
-    messages = (
+    return shared_conversation_messages_payload(db, conv)
+
+
+def _latest_conversation_message(db: Session, conv: models.Conversation) -> Optional[models.ConversationMessage]:
+    return (
         db.query(models.ConversationMessage)
         .filter(models.ConversationMessage.conversation_id == conv.id)
-        .order_by(models.ConversationMessage.created_at.asc())
-        .all()
+        .order_by(models.ConversationMessage.created_at.desc())
+        .first()
     )
-    return [
-        {
-            "direction": msg.direction,
-            "body": msg.body,
-            "subject": msg.subject,
-            "created_at": msg.created_at.isoformat() if msg.created_at else "",
-        }
-        for msg in messages
-    ]
+
+
+def _final_thank_you_already_sent(db: Session, conv: models.Conversation) -> bool:
+    return db.query(models.ConversationMessage).filter(
+        models.ConversationMessage.conversation_id == conv.id,
+        models.ConversationMessage.direction == "outbound",
+        models.ConversationMessage.message_type == "gmail_final_thanks_sent",
+    ).first() is not None
 
 
 def _memory_rate_as_float(memory: dict) -> Optional[float]:
@@ -482,6 +507,95 @@ def _update_booking_from_memory(db: Session, booking: models.Booking, pitch: mod
     if agreements:
         booking.show_summary = "; ".join(str(item) for item in agreements)
     db.commit()
+
+
+def _venue_payload_for_pitch(db: Session, pitch: models.Pitch, conv: Optional[models.Conversation] = None) -> dict:
+    venue = None
+    if pitch.venue_id:
+        venue = db.query(models.Venue).filter(models.Venue.id == pitch.venue_id).first()
+    if not venue and pitch.venue_name:
+        venue = (
+            db.query(models.Venue)
+            .filter(models.Venue.entertainer_id == pitch.entertainer_id)
+            .filter(models.Venue.name == pitch.venue_name)
+            .order_by(models.Venue.created_at.desc())
+            .first()
+        )
+    return {
+        "name": (venue.name if venue else None) or (conv.venue_name if conv else None) or pitch.venue_name,
+        "contact_name": venue.contact_name if venue else None,
+        "contact_email": (venue.contact_email if venue else None) or pitch.recipient_email,
+        "venue_type": venue.venue_type if venue else None,
+        "contact_approach": venue.contact_approach if venue else pitch.venue_contact_approach,
+        "why_fits": venue.why_fits if venue else None,
+        "specific_examples": venue.specific_examples if venue else None,
+    }
+
+
+def _entertainer_payload(db: Session, entertainer_id: str) -> dict:
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == entertainer_id).first()
+    return {
+        "id": entertainer.id,
+        "name": entertainer.name,
+        "type": entertainer.type,
+        "genre": entertainer.genre,
+        "location": entertainer.location,
+        "experience_years": entertainer.experience_years,
+        "social_followers": entertainer.social_followers,
+        "highlights": entertainer.highlights,
+        "current_rate": entertainer.current_rate,
+    } if entertainer else {}
+
+
+def _pitch_payload(pitch: models.Pitch) -> dict:
+    return {
+        "id": pitch.id,
+        "venue_name": pitch.venue_name,
+        "recipient_email": pitch.recipient_email,
+        "pitch_subject": pitch.pitch_subject,
+        "pitch_body": pitch.pitch_body,
+        "proposed_rate": pitch.proposed_rate,
+        "response_type": pitch.response_type,
+    }
+
+
+def _final_thank_you_draft(
+    entertainer: dict,
+    venue: dict,
+    pitch: models.Pitch,
+    memory: dict,
+    outcome: str,
+) -> dict:
+    artist_name = entertainer.get("name") or "the artist"
+    venue_name = venue.get("name") or pitch.venue_name or "your team"
+    greeting = greeting_for(venue, _pitch_payload(pitch))
+    subject = pitch.pitch_subject or f"Booking inquiry for {venue_name}"
+    if not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
+    date_mentions = memory.get("date_mentions") or []
+    date_line = f" We have the date noted as {date_mentions[-1]}." if date_mentions else ""
+    rate = memory.get("agreed_rate")
+    rate_line = f" We also have the rate noted as {rate}." if rate else ""
+
+    if outcome == "rejected":
+        body = (
+            f"{greeting}\n\n"
+            f"Thanks for letting us know. We appreciate you taking a look at {artist_name}.\n\n"
+            "Let us know if you are interested in a future date or if a performance slot opens up later in the season.\n\n"
+        )
+    else:
+        body = (
+            f"{greeting}\n\n"
+            f"Thanks for confirming. We appreciate you working with {artist_name}'s team."
+            f"{date_line}{rate_line}\n\n"
+            "We have everything noted on our end and will keep an eye out for any formal logistics you send over.\n\n"
+        )
+
+    return {
+        "subject": remove_long_dashes(subject),
+        "body": remove_long_dashes(ensure_team_signoff(body, str(entertainer.get("name") or "The Artist"))),
+    }
 
 
 def _analysis_for_reply(reply_body: str, venue_name: str, memory: Optional[dict] = None) -> dict:
@@ -512,7 +626,7 @@ def _analysis_for_reply(reply_body: str, venue_name: str, memory: Optional[dict]
         response_type = "rejected"
         likelihood = 1.5
         worked = "The outreach reached the right surface area, but this target is not ready right now."
-        next_action = "Close this thread politely and schedule a future seasonal re-engagement."
+        next_action = "Thank them, leave the door open, and do not keep pushing this thread."
     elif rate_below:
         interest = "medium"
         response_type = "negotiating"
@@ -629,7 +743,7 @@ async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch:
         booking, created = ensure_booking_for_pitch(db, pitch, conv)
         _update_booking_from_memory(db, booking, pitch, memory)
         if completion.get("stop_outreach"):
-            booking.conversation_stage = "confirmed"
+            booking.conversation_stage = "secured"
             booking.show_summary = (booking.show_summary or "") + f"; Outreach complete: {completion['reason']}"
             db.commit()
         await _broadcast_event(db, {
@@ -653,17 +767,6 @@ async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch:
             "created": created,
         })
 
-    if completion.get("stop_outreach"):
-        await _broadcast_event(db, {
-            "agent_id": "agent2",
-            "event_type": "outreach_complete",
-            "message": f"Marked {conv.venue_name} done. {completion['reason']}",
-            "entertainer_id": pitch.entertainer_id,
-            "target_id": conv.id,
-            "pitch_id": pitch.id,
-            "response_type": analysis["response_type"],
-        })
-
     await _broadcast_event(db, {
         "agent_id": "agent3",
         "event_type": "insight",
@@ -677,6 +780,145 @@ async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch:
     analysis["completion"] = completion
     analysis["memory"] = memory
     return analysis
+
+
+async def _broadcast_outreach_complete(
+    db: Session,
+    conv: models.Conversation,
+    pitch: models.Pitch,
+    completion: dict,
+    response_type: str,
+    final_status: str,
+):
+    await _broadcast_event(db, {
+        "agent_id": "agent2",
+        "event_type": "outreach_complete",
+        "message": f"Marked {conv.venue_name} done. Final thank-you status: {final_status}. {completion.get('reason')}",
+        "entertainer_id": pitch.entertainer_id,
+        "target_id": conv.id,
+        "pitch_id": pitch.id,
+        "response_type": response_type,
+        "final_thank_you_status": final_status,
+    })
+
+
+async def _send_final_thank_you_if_needed(
+    db: Session,
+    conv: models.Conversation,
+    pitch: models.Pitch,
+    memory: dict,
+    analysis: dict,
+    completion: dict,
+    service=None,
+    account: Optional[models.GmailAccount] = None,
+) -> dict:
+    if _final_thank_you_already_sent(db, conv):
+        return {"ok": True, "sent": False, "already_sent": True, "final_status": "already sent"}
+
+    latest = _latest_conversation_message(db, conv)
+    if latest and latest.direction == "outbound":
+        return {"ok": True, "sent": False, "already_outbound": True, "final_status": "already outbound"}
+
+    entertainer_payload = _entertainer_payload(db, pitch.entertainer_id)
+    venue_payload = _venue_payload_for_pitch(db, pitch, conv)
+    outcome = str(completion.get("outcome") or analysis.get("response_type") or pitch.response_type or "accepted").lower()
+    draft = _final_thank_you_draft(entertainer_payload, venue_payload, pitch, memory, outcome)
+    pitch.pitch_subject = draft["subject"]
+    pitch.pitch_body = draft["body"]
+    pitch.strategy_note = "Final thank-you sent before closing the thread."
+    db.commit()
+
+    try:
+        sent_result = _send_pitch_with_gmail_core(
+            pitch,
+            db,
+            service=service,
+            account=account,
+            sent_message_type="gmail_final_thanks_sent",
+        )
+    except Exception as exc:
+        await _broadcast_event(db, {
+            "agent_id": "agent2",
+            "event_type": "error",
+            "message": f"Could not send final thank-you to {conv.venue_name}: {exc}",
+            "entertainer_id": pitch.entertainer_id,
+            "target_id": conv.id,
+            "pitch_id": pitch.id,
+        })
+        return {"ok": False, "sent": False, "draft_created": True, "final_status": "send failed"}
+
+    await _broadcast_event(db, {
+        "agent_id": "agent2",
+        "event_type": "gmail_final_thanks_sent",
+        "message": f"Sent final thank-you to {conv.venue_name}; recipient no longer has the last message.",
+        "entertainer_id": pitch.entertainer_id,
+        "target_id": conv.id,
+        "pitch_id": pitch.id,
+        "message_id": sent_result.get("message_id"),
+        "thread_id": sent_result.get("thread_id"),
+        "dry_run": sent_result.get("dry_run", False),
+    })
+    return {
+        "ok": True,
+        "sent": True,
+        "draft_created": True,
+        "dry_run": sent_result.get("dry_run", False),
+        "final_status": "sent",
+    }
+
+
+async def _ensure_final_thank_you_for_closed_thread(
+    db: Session,
+    conv: models.Conversation,
+    pitch: models.Pitch,
+    service=None,
+    account: Optional[models.GmailAccount] = None,
+) -> dict:
+    latest = _latest_conversation_message(db, conv)
+    if not latest or latest.direction != "inbound" or _final_thank_you_already_sent(db, conv):
+        return {"ok": True, "sent": False, "final_status": "not needed"}
+
+    response_type = str(pitch.response_type or "").lower()
+    if response_type not in {"accepted", "rejected"} and pitch.status not in {"booked", "rejected"}:
+        return {"ok": True, "sent": False, "final_status": "thread still open"}
+
+    entertainer_payload = _entertainer_payload(db, pitch.entertainer_id)
+    memory = build_conversation_memory(
+        _conversation_messages_payload(db, conv),
+        latest.body,
+        {
+            "venue_name": pitch.venue_name,
+            "recipient_email": pitch.recipient_email,
+            "proposed_rate": pitch.proposed_rate,
+        },
+        entertainer_payload,
+    )
+    analysis = {
+        "response_type": "accepted" if response_type == "accepted" or pitch.status == "booked" else "rejected",
+    }
+    completion = conversation_completion_status(memory, analysis, latest.body)
+    if not completion.get("stop_outreach"):
+        return {"ok": True, "sent": False, "final_status": "thread still needs response"}
+
+    result = await _send_final_thank_you_if_needed(
+        db,
+        conv,
+        pitch,
+        memory,
+        analysis,
+        completion,
+        service=service,
+        account=account,
+    )
+    await _broadcast_outreach_complete(
+        db,
+        conv,
+        pitch,
+        completion,
+        analysis["response_type"],
+        result.get("final_status", "unknown"),
+    )
+    return result
 
 
 async def _generate_reply_draft_for_latest_reply(
@@ -738,6 +980,14 @@ async def _generate_reply_draft_for_latest_reply(
         latest_reply,
         analysis,
         conversation_messages=_conversation_messages_payload(db, conv),
+        prior_context=prior_venue_context(
+            db,
+            pitch.entertainer_id,
+            venue_payload.get("name") or conv.venue_name or pitch.venue_name,
+            contact_email=venue_payload.get("contact_email") or pitch.recipient_email,
+            exclude_conversation_id=conv.id,
+            exclude_pitch_id=pitch.id,
+        ),
     )
     pitch.pitch_subject = remove_long_dashes(draft["subject"])
     pitch.pitch_body = remove_long_dashes(draft["body"])
@@ -852,10 +1102,44 @@ def send_pitch_with_gmail(pitch_id: str, db: Session = Depends(get_db)):
     return _send_pitch_with_gmail_core(pitch, db)
 
 
-def _send_pitch_with_gmail_core(pitch: models.Pitch, db: Session, service=None, account: Optional[models.GmailAccount] = None):
+def _send_pitch_with_gmail_core(
+    pitch: models.Pitch,
+    db: Session,
+    service=None,
+    account: Optional[models.GmailAccount] = None,
+    sent_message_type: str = "gmail_reply_sent",
+):
+    is_thread_reply = bool(
+        pitch.gmail_thread_id
+        and pitch.gmail_thread_id != "dry-run"
+        and (pitch.response_type or pitch.status == "responded")
+    )
+    subject = pitch.pitch_subject or f"Booking inquiry for {pitch.venue_name}"
+    if is_thread_reply and not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+
     dry_run = not _bool_env("GMAIL_LIVE_SENDS", False)
     if dry_run:
-        _mark_pitch_sent(pitch, db, message_id="dry-run", thread_id="dry-run")
+        if is_thread_reply:
+            conv = _conversation_for_pitch(pitch, db)
+            db.add(models.ConversationMessage(
+                conversation_id=conv.id,
+                direction="outbound",
+                message_type=sent_message_type,
+                subject=subject,
+                body=pitch.pitch_body or "",
+                gmail_message_id="dry-run",
+                gmail_thread_id=pitch.gmail_thread_id,
+            ))
+            db.commit()
+        _mark_pitch_sent(
+            pitch,
+            db,
+            message_id="dry-run",
+            thread_id=pitch.gmail_thread_id if is_thread_reply else "dry-run",
+            update_initial_message=not is_thread_reply,
+        )
+        mirror_pitch_sent(pitch, dry_run=True, source="gmail_dry_run")
         return {"ok": True, "dry_run": True, "message": "GMAIL_LIVE_SENDS is false; pitch marked sent without emailing."}
 
     recipient = _resolve_recipient(pitch, db)
@@ -878,14 +1162,6 @@ def _send_pitch_with_gmail_core(pitch: models.Pitch, db: Session, service=None, 
     email["To"] = recipient
     if account.email_address:
         email["From"] = account.email_address
-    is_thread_reply = bool(
-        pitch.gmail_thread_id
-        and pitch.gmail_thread_id != "dry-run"
-        and (pitch.response_type or pitch.status == "responded")
-    )
-    subject = pitch.pitch_subject or f"Booking inquiry for {pitch.venue_name}"
-    if is_thread_reply and not subject.lower().startswith("re:"):
-        subject = f"Re: {subject}"
     email["Subject"] = subject
     email.set_content(pitch.pitch_body or "")
 
@@ -909,7 +1185,7 @@ def _send_pitch_with_gmail_core(pitch: models.Pitch, db: Session, service=None, 
         db.add(models.ConversationMessage(
             conversation_id=conv.id,
             direction="outbound",
-            message_type="gmail_reply_sent",
+            message_type=sent_message_type,
             subject=subject,
             body=pitch.pitch_body or "",
             gmail_message_id=sent.get("id"),
@@ -924,6 +1200,7 @@ def _send_pitch_with_gmail_core(pitch: models.Pitch, db: Session, service=None, 
         thread_id=sent.get("threadId"),
         update_initial_message=not is_thread_reply,
     )
+    mirror_pitch_sent(pitch, recipient=recipient, dry_run=False, source="gmail_live")
     return {
         "ok": True,
         "dry_run": False,
@@ -1033,6 +1310,28 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
             analysis = await _analyze_imported_reply(db, conv, pitch, body)
             completion = analysis.get("completion") or {}
             if completion.get("stop_outreach"):
+                final_result = await _send_final_thank_you_if_needed(
+                    db,
+                    conv,
+                    pitch,
+                    analysis.get("memory") or {},
+                    analysis,
+                    completion,
+                    service=service,
+                    account=account,
+                )
+                if final_result.get("draft_created"):
+                    reply_drafts_generated += 1
+                if final_result.get("sent") and not final_result.get("dry_run"):
+                    auto_replies_sent += 1
+                await _broadcast_outreach_complete(
+                    db,
+                    conv,
+                    pitch,
+                    completion,
+                    analysis.get("response_type") or pitch.response_type or "accepted",
+                    final_result.get("final_status", "unknown"),
+                )
                 continue
             draft_result = await _generate_reply_draft_for_latest_reply(db, conv, pitch, body, analysis)
             if draft_result.get("ok"):
@@ -1061,6 +1360,18 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
                             "target_id": conv.id,
                             "pitch_id": pitch.id,
                         })
+
+        final_result = await _ensure_final_thank_you_for_closed_thread(
+            db,
+            conv,
+            pitch,
+            service=service,
+            account=account,
+        )
+        if final_result.get("draft_created"):
+            reply_drafts_generated += 1
+        if final_result.get("sent") and not final_result.get("dry_run"):
+            auto_replies_sent += 1
 
     account.last_sync_at = datetime.utcnow()
     db.commit()

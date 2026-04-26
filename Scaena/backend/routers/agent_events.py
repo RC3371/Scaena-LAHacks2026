@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend import models, schemas
+from backend.services.mongo_store import mirror_agent_event
 from backend.websocket_manager import manager
 from typing import List
 import json
@@ -38,6 +39,7 @@ async def broadcast_event(event: dict, db: Session = Depends(get_db)):
     )
     db.add(record)
     db.commit()
+    mirror_agent_event(event)
     return {"ok": True}
 
 

@@ -40,7 +40,8 @@ def discover_live_venues(entertainer: dict, user_instruction: str = "") -> dict 
     results.extend(_google_peerspace_results(query_seed, location, etype, genre))
     results.extend(_google_social_results(query_seed, location, etype, genre))
 
-    venues = _dedupe(results)[: int(os.getenv("MARKET_RESEARCH_MAX_RESULTS", "12"))]
+    venues = _prepare_opportunities(results, etype, genre, location, rate, query_seed)
+    venues = _dedupe(venues)[: int(os.getenv("MARKET_RESEARCH_MAX_RESULTS", "12"))]
     if not venues:
         return None
 
@@ -51,9 +52,116 @@ def discover_live_venues(entertainer: dict, user_instruction: str = "") -> dict 
         "pricing_trend": "stable",
         "venues": venues,
         "market_insights": gemini_insights or (
-            f"Live discovery searched Google-indexed venue pages, Eventbrite listings, Peerspace spaces, "
-            f"and public social/event pages around {location}. Review source links before outreach; "
-            f"social leads should use public business contact links or approved DM workflows only."
+            f"Live discovery searched Google-indexed venue pages, campus/event pages, Eventbrite listings, "
+            f"Peerspace spaces, and public social pages around {location}. Each match is prioritized for "
+            f"booking path, audience fit, and next outreach step; verify source links before real outreach."
+        ),
+    }
+
+
+def curated_opportunity_fallback(entertainer: dict, user_instruction: str = "") -> dict:
+    location = entertainer.get("location") or "Los Angeles, CA"
+    etype = entertainer.get("type") or "performer"
+    genre = entertainer.get("genre") or etype
+    rate = float(entertainer.get("current_rate") or 350)
+    name = entertainer.get("name") or "the artist"
+    query_seed = user_instruction or entertainer.get("highlights") or ""
+    test_email = os.getenv("GMAIL_TEST_RECIPIENT") or None
+
+    if any(term in f"{etype} {genre}".lower() for term in ["rapper", "hip-hop", "hip hop", "music", "singer", "band"]):
+        raw = [
+            {
+                "name": "UCLA Student Union Event Services",
+                "venue_type": "College",
+                "typical_pay": f"Verify student budget; target around ${rate:.0f}",
+                "fit_score": 0.92,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "https://www.asucla.ucla.edu/student-union-event-services",
+                "why_fits": f"Campus event services are a strong buyer path for {name}: student programming, high foot traffic, and a clear events office.",
+                "specific_examples": ["campus programming", "student event office", "buyer path: reservations/events"],
+            },
+            {
+                "name": "KOXY Radio Station, Occidental College",
+                "venue_type": "College",
+                "typical_pay": f"Verify student budget; target around ${rate:.0f}",
+                "fit_score": 0.9,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "https://www.oxy.edu/student-life/leadership-involvement/koxy-radio-station",
+                "why_fits": "College radio teams often touch student concerts and on-campus music culture, making them useful warm entry points.",
+                "specific_examples": ["college radio", "campus concerts", "buyer path: student music programming"],
+            },
+            {
+                "name": "Catch One",
+                "venue_type": "Music Venue",
+                "typical_pay": f"Verify door deal or support slot; target around ${rate:.0f}",
+                "fit_score": 0.88,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "https://catch.one/",
+                "why_fits": "A real LA room with hip-hop and nightlife crossover potential, useful for support slots and themed bills.",
+                "specific_examples": ["LA music venue", "hip-hop/nightlife crossover", "buyer path: booking desk"],
+            },
+            {
+                "name": "The Virgil",
+                "venue_type": "Bar | Music Venue",
+                "typical_pay": f"Verify bar/showcase budget; target around ${rate:.0f}",
+                "fit_score": 0.84,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "https://thevirgil.com/",
+                "why_fits": "A smaller LA bar/music room is a realistic paid showcase target for building repeat local audience.",
+                "specific_examples": ["bar/music venue", "showcase slot", "buyer path: venue booking contact"],
+            },
+            {
+                "name": "LACC Herb Alpert Music Center",
+                "venue_type": "College | Event Series",
+                "typical_pay": f"Verify department/event budget; target around ${rate:.0f}",
+                "fit_score": 0.78,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "https://www.lacc.edu/academic/departments/music/music-events",
+                "why_fits": "College music departments and event series can be useful exposure plays when framed as student-facing programming.",
+                "specific_examples": ["college music events", "guest artist lane", "buyer path: department events contact"],
+            },
+        ]
+    else:
+        raw = [
+            {
+                "name": f"{location} Campus Events Office",
+                "venue_type": "College",
+                "typical_pay": f"Verify budget; target around ${rate:.0f}",
+                "fit_score": 0.84,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "",
+                "why_fits": f"Campus programming can book emerging {etype}s for high-exposure events with clear student audiences.",
+                "specific_examples": ["student activities", "campus programming", "buyer path: events office"],
+            },
+            {
+                "name": f"{location} Event Producer Lead",
+                "venue_type": "Event Producer",
+                "typical_pay": f"Verify budget; target around ${rate:.0f}",
+                "fit_score": 0.76,
+                "contact_name": "Booking Team",
+                "contact_email": test_email,
+                "source_url": "",
+                "why_fits": "Independent producers can place talent across venues, private events, and recurring showcases.",
+                "specific_examples": ["event producer", "showcase calendar", "buyer path: organizer"],
+            },
+        ]
+
+    venues = _prepare_opportunities(raw, etype, genre, location, rate, query_seed)
+    return {
+        "market_rate_low": max(0, round(rate * 0.75)),
+        "market_rate_high": round(rate * 1.6),
+        "recommended_rate": rate,
+        "pricing_trend": "stable",
+        "venues": venues,
+        "market_insights": (
+            "Live provider quota was unavailable, so Scaena generated an agent-curated fallback list from known buyer lanes. "
+            "Use these as demo-safe opportunities and verify source pages before real outreach."
         ),
     }
 
@@ -68,7 +176,9 @@ def _gemini_grounded_results(query_seed: str, location: str, etype: str, genre: 
         return None
 
     model = os.getenv("GEMINI_GROUNDING_MODEL", "gemini-2.5-flash")
-    prompt = f"""
+    prompts = [
+        f"""
+You are a senior booking agent replacing the manual work of a celebrity talent agent.
 Use Google Search grounding to find real-world booking opportunities for this entertainer.
 
 Artist type: {etype}
@@ -77,8 +187,9 @@ Location: {location}
 Target search brief: {query_seed}
 Target rate: about ${rate:.0f} per booking
 
-Find organizations, venues, event series, campuses, festivals, bars, music venues, or event spaces that could realistically book this act.
-Prioritize real source pages and public booking/event pages. Do not invent email addresses or names. If a direct booking contact is not visible, use null for contact_email and "Booking Team" for contact_name. Fit scores must be numbers from 0.0 to 1.0.
+Find 5 strong organizations, venues, event series, campuses, festivals, bars, music venues, or event spaces that could realistically book this act.
+A useful lead has a plausible buyer, a real booking path, the right audience, and a reason to contact them now. Avoid generic listicles unless they point to a specific venue.
+Prioritize real source pages and public booking/event pages. Use short canonical source URLs, not Google or Vertex grounding redirect URLs. Do not invent email addresses or names. If a direct booking contact is not visible, use null for contact_email and "Booking Team" for contact_name. Fit scores must be numbers from 0.0 to 1.0.
 
 Return only valid JSON with this exact shape:
 {{
@@ -92,14 +203,69 @@ Return only valid JSON with this exact shape:
       "contact_name": "visible contact name or Booking Team",
       "contact_email": null,
       "source_url": "best source URL",
-      "contact_approach": "specific next outreach step",
-      "why_fits": "one human-readable reason tied to the artist and source",
-      "specific_examples": ["source clue", "event/program clue"]
+      "contact_approach": "specific next outreach step a booking agent would take",
+      "why_fits": "one human-readable reason tied to the artist, audience, and source",
+      "specific_examples": ["source clue", "event/program clue", "buyer or booking lane"]
     }}
   ]
 }}
-""".strip()
+""".strip(),
+        f"""
+Use Google Search grounding and return JSON only. Think like a booking agent, not a directory scraper.
 
+Find exactly 5 specific, real booking targets near {location} for a {genre} {etype} with a target rate near ${rate:.0f}.
+The user specifically wants: {query_seed}
+
+Prioritize these live-source lanes:
+1. college campus programming boards and student event offices
+2. LA music venues and bars with live music or hip-hop programming
+3. student festivals, campus concerts, and showcase/event pages
+4. Peerspace or public social/event pages only when they point to a usable venue or organizer
+
+Do not invent emails. Use null for contact_email unless the source visibly provides one.
+Every venue must include a short canonical source_url, not a Google or Vertex grounding redirect URL.
+Avoid weak leads like broad city guides, unrelated academic pages, personal social profiles, or pages without a plausible buyer path.
+
+Return this JSON shape exactly:
+{{
+  "market_insights": "2 concise sentences about strongest lanes and any outreach caution.",
+  "venues": [
+    {{
+      "name": "real venue, organization, board, or event series",
+      "venue_type": "College | Festival | Music Venue | Bar | Event Space | Social Lead | Other",
+      "typical_pay": "Verify from source",
+      "fit_score": 0.86,
+      "contact_name": "Booking Team",
+      "contact_email": null,
+      "source_url": "https://source-page.example",
+      "contact_approach": "specific next outreach step a booking agent would take",
+      "why_fits": "one reason this target fits the artist, audience, and source",
+      "specific_examples": ["source clue", "program or event clue", "buyer or booking lane"]
+    }}
+  ]
+}}
+""".strip(),
+    ]
+
+    for prompt in prompts:
+        payload = _gemini_grounded_payload(api_key, model, prompt)
+        if not payload:
+            continue
+        text = _gemini_text(payload)
+        parsed = _parse_json_object(text)
+        if not parsed:
+            continue
+        venues = _gemini_venues_from_payload(parsed, payload, etype, genre)
+        if venues:
+            return {
+                "market_insights": _clean_text(str(parsed.get("market_insights") or "")),
+                "venues": venues,
+            }
+
+    return None
+
+
+def _gemini_grounded_payload(api_key: str, model: str, prompt: str) -> dict | None:
     try:
         resp = httpx.post(
             GEMINI_API_URL.format(model=model),
@@ -111,22 +277,19 @@ Return only valid JSON with this exact shape:
                 "contents": [{"parts": [{"text": prompt}]}],
                 "tools": [{"google_search": {}}],
                 "generationConfig": {
-                    "temperature": 0.2,
-                    "maxOutputTokens": 3500,
+                    "temperature": 0.15,
+                    "maxOutputTokens": 6000,
                 },
             },
             timeout=30,
         )
         resp.raise_for_status()
-        payload = resp.json()
+        return resp.json()
     except Exception:
         return None
 
-    text = _gemini_text(payload)
-    parsed = _parse_json_object(text)
-    if not parsed:
-        return None
 
+def _gemini_venues_from_payload(parsed: dict, payload: dict, etype: str, genre: str) -> list[dict]:
     sources = _gemini_sources(payload)
     raw_venues = parsed.get("venues", []) if isinstance(parsed, dict) else []
     venues = []
@@ -159,13 +322,7 @@ Return only valid JSON with this exact shape:
             }
         )
 
-    if not venues:
-        return None
-
-    return {
-        "market_insights": _clean_text(str(parsed.get("market_insights") or "")) if isinstance(parsed, dict) else "",
-        "venues": venues,
-    }
+    return venues
 
 
 def _gemini_text(payload: dict) -> str:
@@ -205,8 +362,61 @@ def _parse_json_object(text: str) -> dict | None:
     try:
         parsed = json.loads(cleaned)
     except Exception:
-        return None
+        return _salvage_venue_json(cleaned)
     return parsed if isinstance(parsed, dict) else None
+
+
+def _salvage_venue_json(text: str) -> dict | None:
+    """Recover useful venue objects from a grounded response that was cut off mid-JSON."""
+    insight = ""
+    insight_match = re.search(r'"market_insights"\s*:\s*"((?:\\.|[^"\\])*)"', text, flags=re.DOTALL)
+    if insight_match:
+        try:
+            insight = json.loads(f'"{insight_match.group(1)}"')
+        except Exception:
+            insight = _clean_text(insight_match.group(1))
+
+    venues_start = re.search(r'"venues"\s*:\s*\[', text)
+    if not venues_start:
+        return None
+
+    venues_text = text[venues_start.end():]
+    objects: list[dict] = []
+    depth = 0
+    start = None
+    in_string = False
+    escaped = False
+    for idx, char in enumerate(venues_text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+        if char == '"':
+            in_string = True
+            continue
+        if char == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+            continue
+        if char == "}":
+            if depth:
+                depth -= 1
+            if depth == 0 and start is not None:
+                raw_obj = venues_text[start: idx + 1]
+                try:
+                    parsed = json.loads(raw_obj)
+                except Exception:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    objects.append(parsed)
+                start = None
+
+    return {"market_insights": insight, "venues": objects} if objects else None
 
 
 def _google_config() -> tuple[str | None, str | None]:
@@ -271,8 +481,8 @@ def _google_search(query: str, source: str, venue_type: str, num: int = 5) -> li
 
 def _google_general_results(query_seed: str, location: str, etype: str, genre: str) -> list[dict]:
     query = (
-        f'{query_seed} "{location}" booking talent buyer OR "live music" OR "student events" '
-        f'OR festival OR bar'
+        f'{query_seed} "{location}" ("booking" OR "talent buyer" OR "event services" OR "student programming" '
+        f'OR "live music" OR "campus events" OR festival OR bar)'
     )
     return _google_search(query, "Google", _venue_type_for(etype, genre), num=6)
 
@@ -284,7 +494,7 @@ def _google_peerspace_results(query_seed: str, location: str, etype: str, genre:
 
 def _google_social_results(query_seed: str, location: str, etype: str, genre: str) -> list[dict]:
     query = (
-        f'("{location}" "{genre}" "{etype}" booking) '
+        f'("{location}" "{genre}" "{etype}" booking OR showcase OR "live music") '
         f'(site:instagram.com OR site:tiktok.com OR site:facebook.com/events)'
     )
     return _google_search(query, "Social", "Social Lead", num=5)
@@ -348,6 +558,203 @@ def _dedupe(venues: list[dict]) -> list[dict]:
         unique.append(venue)
     unique.sort(key=lambda v: v.get("fit_score") or 0, reverse=True)
     return unique
+
+
+def _unique_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        cleaned = _clean_text(str(value))
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(cleaned)
+    return result
+
+
+def _prepare_opportunities(
+    venues: list[dict],
+    etype: str,
+    genre: str,
+    location: str,
+    rate: float,
+    query_seed: str,
+) -> list[dict]:
+    prepared = []
+    for venue in venues:
+        if not isinstance(venue, dict):
+            continue
+        name = _clean_title(str(venue.get("name") or ""))
+        if not _useful_name(name):
+            continue
+
+        source_url = _best_source_url(venue)
+        source_domain = _domain(source_url) if source_url else ""
+        venue_type = _clean_text(str(venue.get("venue_type") or _venue_type_for(etype, genre)))
+        score = _fit_score(venue.get("fit_score"), _score_for_venue_type(venue_type, source_domain))
+        score = _boost_score(score, venue_type, source_url, venue)
+        priority = _priority_for(score)
+        lane = _lane_for(venue_type, source_domain, venue)
+        next_step = _agent_next_step(venue, venue_type, source_domain)
+        examples = _as_text_list(venue.get("specific_examples"))
+        if lane:
+            examples.append(f"Lane: {lane}")
+        if priority:
+            examples.append(f"Priority: {priority}")
+        if next_step:
+            examples.append(f"Next step: {next_step}")
+        if source_domain:
+            examples.append(f"Source: {source_domain}")
+
+        why = _clean_text(str(venue.get("why_fits") or ""))
+        if not why:
+            why = (
+                f"This is a {priority.lower()} opportunity because it matches the artist's {genre or etype} audience, "
+                f"has a plausible buyer path, and sits near the {location} target market."
+            )
+        elif "opportunity" not in why.lower():
+            why = f"Opportunity: {lane}. {why}"
+
+        prepared.append({
+            **venue,
+            "name": name,
+            "venue_type": venue_type,
+            "typical_pay": _clean_text(str(venue.get("typical_pay") or f"Verify budget; target around ${rate:.0f}")),
+            "fit_score": score,
+            "contact_name": _clean_text(str(venue.get("contact_name") or "Booking Team")) or "Booking Team",
+            "contact_email": _clean_email(venue.get("contact_email")) or os.getenv("GMAIL_TEST_RECIPIENT") or None,
+            "source_url": source_url,
+            "contact_approach": next_step,
+            "why_fits": why[:700],
+            "specific_examples": _unique_preserve_order(examples)[:6],
+        })
+    return prepared
+
+
+def _useful_name(name: str) -> bool:
+    if not name:
+        return False
+    lowered = name.lower()
+    weak = {
+        "venue lead",
+        "events",
+        "music",
+        "home",
+        "calendar",
+        "contact",
+        "event calendar",
+    }
+    return lowered not in weak and len(lowered) > 2
+
+
+def _best_source_url(venue: dict) -> str:
+    candidates = [str(venue.get("source_url") or "").strip()]
+    for item in _as_text_list(venue.get("specific_examples")):
+        if item.startswith("http"):
+            candidates.append(item)
+    for link in candidates:
+        if _is_useful_source_url(link):
+            return link
+    return ""
+
+
+def _is_useful_source_url(url: str) -> bool:
+    if not url or not url.startswith(("http://", "https://")):
+        return False
+    domain = _domain(url).lower()
+    bad_domains = [
+        "google.com",
+        "vertexaisearch.cloud.google.com",
+        "accounts.google.com",
+        "search.google.com",
+    ]
+    return not any(domain == bad or domain.endswith(f".{bad}") for bad in bad_domains)
+
+
+def _score_for_venue_type(venue_type: str, source_domain: str) -> float:
+    text = f"{venue_type} {source_domain}".lower()
+    if any(term in text for term in ["college", "university", ".edu", "campus", "student"]):
+        return 0.9
+    if any(term in text for term in ["festival", "eventbrite", "showcase"]):
+        return 0.86
+    if any(term in text for term in ["music venue", "bar", "nightclub", "live music"]):
+        return 0.84
+    if any(term in text for term in ["peerspace", "event space"]):
+        return 0.76
+    if "social" in text:
+        return 0.72
+    return 0.7
+
+
+def _boost_score(score: float, venue_type: str, source_url: str, venue: dict) -> float:
+    text = " ".join([
+        venue_type,
+        source_url,
+        str(venue.get("contact_approach") or ""),
+        str(venue.get("why_fits") or ""),
+        " ".join(_as_text_list(venue.get("specific_examples"))),
+    ]).lower()
+    if any(term in text for term in ["booking", "event services", "programming", "student", "talent buyer", "concert"]):
+        score += 0.05
+    if _clean_email(venue.get("contact_email")):
+        score += 0.04
+    if source_url:
+        score += 0.03
+    if any(term in text for term in ["listicle", "things to do", "blog", "guide"]):
+        score -= 0.08
+    return max(0.0, min(score, 0.98))
+
+
+def _priority_for(score: float) -> str:
+    if score >= 0.9:
+        return "Hot"
+    if score >= 0.78:
+        return "Warm"
+    return "Verify"
+
+
+def _lane_for(venue_type: str, source_domain: str, venue: dict) -> str:
+    text = " ".join([
+        venue_type,
+        source_domain,
+        str(venue.get("name") or ""),
+        str(venue.get("why_fits") or ""),
+        " ".join(_as_text_list(venue.get("specific_examples"))),
+    ]).lower()
+    if any(term in text for term in ["college", "university", ".edu", "campus", "student"]):
+        return "campus programming"
+    if any(term in text for term in ["festival", "eventbrite", "showcase"]):
+        return "festival/showcase"
+    if any(term in text for term in ["bar", "nightclub"]):
+        return "bar/nightlife"
+    if any(term in text for term in ["music venue", "concert", "live music"]):
+        return "music venue"
+    if "peerspace" in text or "event space" in text:
+        return "private event space"
+    if any(term in text for term in ["instagram", "tiktok", "facebook"]):
+        return "public social lead"
+    return "venue lead"
+
+
+def _agent_next_step(venue: dict, venue_type: str, source_domain: str) -> str:
+    approach = _clean_text(str(venue.get("contact_approach") or ""))
+    if approach and "open source page" not in approach.lower():
+        return approach[:260]
+    text = f"{venue_type} {source_domain}".lower()
+    if any(term in text for term in ["college", "university", ".edu", "campus", "student"]):
+        return "Find the student programming or event services contact, then pitch a student-friendly set with rate, reel, and flexible dates."
+    if "eventbrite" in text or "festival" in text:
+        return "Identify the organizer or submission page, then send a short festival/showcase pitch with EPK and set-length options."
+    if "peerspace" in text:
+        return "Use the host inquiry flow only if the space supports live music, then ask whether they book talent or refer event producers."
+    if any(term in text for term in ["instagram", "tiktok", "facebook"]):
+        return "Use the public business contact link first; use DM only as a follow-up when the page clearly represents the venue."
+    if any(term in text for term in ["bar", "nightclub", "music"]):
+        return "Email the talent buyer or booking desk with a concise local draw, target rate, reel, and two possible show windows."
+    return "Verify the buyer path on the source page, then send a concise booking pitch with rate, reel, and availability."
 
 
 def _normalize_key(value: str) -> str:

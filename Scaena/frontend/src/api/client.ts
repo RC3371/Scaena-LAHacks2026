@@ -81,12 +81,18 @@ export const client = {
       (await api.get(`/analytics/summary/${entertainerId}`)).data,
     insights: async (entertainerId: string) =>
       (await api.get<Insight[]>(`/analytics/insights/${entertainerId}`)).data,
+    autoIngestChatHistory: async (entertainerId: string) =>
+      (await api.post(`/analytics/auto-ingest/${entertainerId}`)).data,
   },
   bookings: {
     active: async () => (await api.get("/bookings/active")).data,
     completedUnrebooked: async () => (await api.get("/bookings/completed-unrebooked")).data,
+    updatePipeline: async (bookingId: string, payload: Record<string, unknown>) =>
+      (await api.patch(`/bookings/${bookingId}/pipeline`, payload)).data,
     resolvePerformance: async (bookingId: string) =>
       (await api.patch(`/bookings/${bookingId}/resolve-performance`)).data,
+    resolvePerformanceWithNotes: async (bookingId: string, payload: Record<string, unknown>) =>
+      (await api.patch(`/bookings/${bookingId}/resolve-performance`, payload)).data,
     messages: async (bookingId: string) => (await api.get(`/bookings/messages/${bookingId}`)).data,
     markBookingMessageSent: async (messageId: string) =>
       (await api.patch(`/bookings/conversation-message/${messageId}`)).data,

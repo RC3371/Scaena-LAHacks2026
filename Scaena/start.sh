@@ -27,7 +27,7 @@ npm install
 cd "$ROOT_DIR"
 
 echo "[4/5] Starting backend (http://localhost:8000)..."
-python3 -m uvicorn backend.main:app --reload --port 8000 &
+python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 &
 BACKEND_PID=$!
 
 echo "[5/5] Starting agent bureau and frontend..."

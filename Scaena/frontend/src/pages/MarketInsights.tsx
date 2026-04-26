@@ -4,7 +4,15 @@ import { Search, Terminal, ChevronDown, Send, Zap, TrendingUp } from "lucide-rea
 import { client } from "../api/client";
 import { useWebSocket } from "../hooks/useWebSocket";
 import type { Venue } from "../types";
+import { loadPageState, savePageState } from "../utils/pagePersistence";
 
+const marketFallbackState = {
+  autoMode: true,
+  logs: [] as string[],
+  input: "",
+  expandedId: null as string | null,
+  sentVenueIds: [] as string[],
+};
 
 export function MarketInsights() {
   const [isScanning, setIsScanning] = useState(false);
@@ -24,21 +32,36 @@ export function MarketInsights() {
       const entertainers = await client.entertainers.active();
       if (!entertainers.length) return;
       const ent = entertainers[0];
+      const saved = loadPageState(`scaena.ui.market.${ent.id}`, marketFallbackState);
       setEntertainerId(ent.id);
-      setAutoMode(ent.outreach_mode !== "manual_approve");
+      setAutoMode(saved.autoMode ?? ent.outreach_mode !== "manual_approve");
+      setInput(saved.input || "");
+      setExpandedId(saved.expandedId || null);
+      setSentToOutreach(new Set(saved.sentVenueIds || []));
       const [venueData, summaryData] = await Promise.all([
         client.venues.list(ent.id),
         client.analytics.summary(ent.id),
       ]);
       setVenues(venueData);
       setSummary(summaryData);
-      setLogs([
+      setLogs(saved.logs?.length ? saved.logs : [
         `> PROFILE LOADED :: ${ent.name.toUpperCase()}`,
         `> LOADED ${venueData.length} VENUES FROM LAST SCAN`,
         "> AGENT 1 READY :: AWAITING DIRECTIVE",
       ]);
     })();
   }, []);
+
+  useEffect(() => {
+    if (!entertainerId) return;
+    savePageState(`scaena.ui.market.${entertainerId}`, {
+      autoMode,
+      logs,
+      input,
+      expandedId,
+      sentVenueIds: Array.from(sentToOutreach),
+    });
+  }, [autoMode, logs, input, expandedId, sentToOutreach, entertainerId]);
 
   useEffect(() => {
     const agentEvents = events.filter((e) => e.agent_id === "agent1");
@@ -87,12 +110,20 @@ export function MarketInsights() {
         status: "draft",
       });
       if (autoMode && generated.pitch_id) {
-        await client.gmail.sendPitch(generated.pitch_id);
+        setLogs((prev) => [`> AUTO SEND QUEUED :: ${venue.name.toUpperCase()} -> GMAIL`, ...prev]);
+        client.gmail.sendPitch(generated.pitch_id)
+          .then(() => {
+            setLogs((prev) => [`> AUTO SENT :: ${venue.name.toUpperCase()} -> GMAIL`, ...prev]);
+          })
+          .catch((error) => {
+            console.error(error);
+            setLogs((prev) => [`> SEND ERROR :: ${venue.name.toUpperCase()} NEEDS GMAIL CHECK`, ...prev]);
+          });
       }
       setSentToOutreach((prev) => new Set([...prev, venue.id]));
       setLogs((prev) => [
         autoMode
-          ? `> AUTO SENT :: ${venue.name.toUpperCase()} -> GMAIL`
+          ? `> GENERATED PITCH :: ${venue.name.toUpperCase()}`
           : `> GENERATED ${String(generated.generation_source || "DRAFT").toUpperCase()} PITCH :: ${venue.name.toUpperCase()}`,
         ...prev,
       ]);

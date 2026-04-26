@@ -12,6 +12,7 @@ _PLACEHOLDER_VALUES = {
     "your_eventbrite_private_token_here",
     "your_google_client_id_here",
     "your_google_client_secret_here",
+    "your_mongodb_uri_here",
 }
 
 
@@ -75,6 +76,13 @@ def config_health_lines(component: str = "app") -> list[str]:
         lines.append(_line("[WARN]", "Email safety", "live sends enabled without GMAIL_TEST_RECIPIENT or EMAIL_ALLOWLIST"))
 
     lines.append(_line("[OK]" if _is_configured("DATABASE_URL") else "[WARN]", "DATABASE_URL", "set" if _is_configured("DATABASE_URL") else "missing, default SQLite path will be used"))
+    try:
+        from backend.services.mongo_store import mongo_health_detail
+        mongo_detail = mongo_health_detail()
+    except Exception:
+        mongo_detail = "not available"
+    mongo_configured = _is_configured("MONGODB_URI") or _is_configured("MONGO_URI")
+    lines.append(_line("[OK]" if mongo_configured and mongo_detail.startswith("connected") else "[INFO]", "MongoDB mirror", mongo_detail))
     lines.append(_line("[INFO]", "SCAENA_SEED_DEMO", "true, demo fixture may load" if _bool_env("SCAENA_SEED_DEMO", False) else "false, demo fixture skipped"))
 
     return lines

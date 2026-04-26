@@ -17,6 +17,7 @@ agent = Agent(
     name="scaena_market_research",
     seed=os.getenv("AGENT1_SEED", "scaena_market_research_seed"),
     port=8001,
+    address=os.getenv("AGENT1_ADDRESS"),
 )
 
 try:

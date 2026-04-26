@@ -14,6 +14,7 @@ agent = Agent(
     name="scaena_pipeline_rebook",
     seed=os.getenv("AGENT4_SEED", "scaena_followup_seed"),
     port=8004,
+    address=os.getenv("AGENT4_ADDRESS"),
 )
 
 try:
@@ -67,6 +68,17 @@ _STAGE_ALIASES = {
     "rebooking": "rebook_outreach_sent",
 }
 
+_CHECKLIST_LABELS = {
+    "date_confirmed": "date",
+    "rate_confirmed": "rate",
+    "contact_confirmed": "main contact",
+    "set_length_confirmed": "set length",
+    "load_in_confirmed": "load-in or arrival time",
+    "payment_confirmed": "payment method or invoice details",
+    "promo_assets_sent": "promo assets",
+    "contract_invoice_sent": "contract or invoice",
+}
+
 
 def broadcast(event_type: str, message: str, entertainer_id: str, **extra):
     try:
@@ -91,6 +103,35 @@ def _format_template(template: dict, name: str, venue: str) -> dict:
         "subject": template["subject"].format(name=name, venue=venue, team=team_name_for(name)),
         "body": template["body"].format(name=name, venue=venue, team=team_name_for(name)),
     }
+
+
+def _booking_logistics_context(booking: dict) -> tuple[list[str], list[str]]:
+    checklist = booking.get("logistics_checklist") or {}
+    known = [label for key, label in _CHECKLIST_LABELS.items() if checklist.get(key)]
+    missing = [label for key, label in _CHECKLIST_LABELS.items() if not checklist.get(key)]
+    if booking.get("show_date") and "date" not in known:
+        known.append(f"date {booking['show_date']}")
+    if booking.get("agreed_rate") and "rate" not in known:
+        known.append(f"rate ${booking['agreed_rate']}")
+    return known, missing
+
+
+def _booking_fallback_message(stage: str, name: str, venue: str, booking: dict) -> dict:
+    known, missing = _booking_logistics_context(booking)
+    if stage in {"secured", "logistics_pending"}:
+        ask_items = missing[:2] or ["any final day-of notes"]
+        known_line = f"We have {', '.join(known[:4])} noted." if known else "We are getting the show details organized."
+        return {
+            "subject": f"Logistics for {name} at {venue}",
+            "body": (
+                f"Hi,\n\n"
+                f"{known_line} Could you confirm {', '.join(ask_items)} when you have a chance?\n\n"
+                f"Sincerely,\n{team_name_for(name)}"
+            ),
+        }
+
+    template = _MOCK_BOOKING_MSGS.get(stage, _MOCK_BOOKING_MSGS["secured"])
+    return _format_template(template, name, venue)
 
 
 def _get_entertainer_name(entertainer_id: str) -> str:
@@ -222,18 +263,24 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
 
     broadcast("working", f"Drafting {stage} message for {venue}...", eid, target_id=target_id, stage=stage)
     name = _get_entertainer_name(eid)
+    known_logistics, missing_logistics = _booking_logistics_context(booking)
+
+    if stage in {"secured", "logistics_pending"} and not missing_logistics:
+        broadcast("logistics_complete", f"All visible logistics are already captured for {venue}; no extra check-in needed.", eid, target_id=target_id, stage=stage)
+        return
 
     if _simulation_mode:
-        template = _MOCK_BOOKING_MSGS[stage]
-        message = _format_template(template, name, venue)
+        message = _booking_fallback_message(stage, name, venue, booking)
     else:
+        known_text = ", ".join(known_logistics) if known_logistics else "none"
+        missing_text = ", ".join(missing_logistics[:3]) if missing_logistics else "none"
         stage_prompts = {
-            "secured": f"Confirm logistics with {venue}: arrival, sound check, payment. 100 words max.",
-            "logistics_pending": f"Ask {venue} to confirm remaining logistics: load-in, set length, payment, promo assets. 90 words max.",
+            "secured": f"Write a short logistics note to {venue}. Ask only for missing items: {missing_text}. Do not ask about known items: {known_text}. 90 words max.",
+            "logistics_pending": f"Ask {venue} only for remaining logistics: {missing_text}. Do not ask for already known details: {known_text}. 80 words max.",
             "show_scheduled": f"Check in 2 days before show at {venue}. 60 words max.",
             "post_show_followup": f"Post-show thank you to {venue}, hint at rebooking. 80 words max.",
         }
-        prompt = f"{stage_prompts[stage]}\nPerformer: {name}\nWrite from {team_name_for(name)}'s perspective using we/our team, not from the artist personally.\nSign off exactly with: Sincerely, then {team_name_for(name)} on the next line.\nDo not use em dashes or en dashes.\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
+        prompt = f"{stage_prompts[stage]}\nPerformer: {name}\nKnown logistics: {known_text}\nMissing logistics: {missing_text}\nWrite from {team_name_for(name)}'s perspective using we/our team, not from the artist personally.\nSign off exactly with: Sincerely, then {team_name_for(name)} on the next line.\nDo not use em dashes or en dashes.\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
         try:
             resp_llm = _llm.chat.completions.create(
                 model=os.getenv("ASI1_MODEL", "asi1-mini"),
@@ -244,8 +291,7 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
             message = json.loads(raw)
         except Exception as e:
             ctx.logger.error(f"Booking msg gen failed: {e}")
-            template = _MOCK_BOOKING_MSGS.get(stage, _MOCK_BOOKING_MSGS["secured"])
-            message = _format_template(template, name, venue)
+            message = _booking_fallback_message(stage, name, venue, booking)
 
     message = _normalize_message(message, name)
 

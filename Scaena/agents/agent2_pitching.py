@@ -18,6 +18,7 @@ agent = Agent(
     name="scaena_outreach_pitching",
     seed=os.getenv("AGENT2_SEED", "scaena_pitching_seed"),
     port=8002,
+    address=os.getenv("AGENT2_ADDRESS"),
 )
 
 try:

@@ -1,11 +1,12 @@
 from agents.agent_runtime import Model
+import os
 from typing import List, Optional
 
 # Well-known agent addresses (set before bureau starts)
-AGENT1_ADDRESS = "agent1qscaenamarketresearch"
-AGENT2_ADDRESS = "agent1qscaenaoutreachpitching"
-AGENT3_ADDRESS = "agent1qscaenaanalyticslearning"
-AGENT4_ADDRESS = "agent1qscaenapipelinerebook"
+AGENT1_ADDRESS = os.getenv("AGENT1_ADDRESS", "agent1qscaenamarketresearch")
+AGENT2_ADDRESS = os.getenv("AGENT2_ADDRESS", "agent1qscaenaoutreachpitching")
+AGENT3_ADDRESS = os.getenv("AGENT3_ADDRESS", "agent1qscaenaanalyticslearning")
+AGENT4_ADDRESS = os.getenv("AGENT4_ADDRESS", "agent1qscaenapipelinerebook")
 
 
 class MarketResearchResult(Model):

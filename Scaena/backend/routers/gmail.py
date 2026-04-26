@@ -24,6 +24,7 @@ from backend.services.conversation_context import (
     prior_venue_context,
 )
 from backend.services.booking_pipeline import ensure_booking_for_pitch
+from backend.services.booking_logistics import apply_auto_logistics_to_booking
 from backend.services.mongo_store import mirror_agent_event, mirror_pitch_sent
 from backend.services.pitch_generation import (
     build_conversation_memory,
@@ -507,6 +508,7 @@ def _update_booking_from_memory(db: Session, booking: models.Booking, pitch: mod
     if agreements:
         booking.show_summary = "; ".join(str(item) for item in agreements)
     db.commit()
+    apply_auto_logistics_to_booking(db, booking)
 
 
 def _venue_payload_for_pitch(db: Session, pitch: models.Pitch, conv: Optional[models.Conversation] = None) -> dict:

@@ -75,8 +75,9 @@ class Agent:
         self.name = name
         self.seed = seed
         self.port = port
-        # Deterministic fake address
-        self.address = f"agent1q{name.replace('_', '').replace('-', '')}"
+        # Deterministic local fallback, overridable so demo logs can align with
+        # Agentverse addresses without changing the local queue runtime.
+        self.address = kwargs.get("address") or f"agent1q{name.replace('_', '').replace('-', '')}"
         self.storage = AgentStorage(name)
         self._ctx = Context(self)
         self._startup_handlers: list = []

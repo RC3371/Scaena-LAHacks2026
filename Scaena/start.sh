@@ -14,7 +14,8 @@ fi
 echo "[1/5] Installing Python dependencies..."
 python3 -m pip install -r requirements.txt
 
-if [ "${SCAENA_SEED_DEMO:-false}" = "true" ]; then
+SEED_DEMO="$(python3 -c 'from dotenv import dotenv_values; print(str(dotenv_values(".env").get("SCAENA_SEED_DEMO", "false")).lower())')"
+if [ "$SEED_DEMO" = "true" ]; then
   echo "[2/5] Seeding demo database..."
   python3 seed.py
 else

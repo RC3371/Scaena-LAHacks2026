@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend import models, schemas
 from backend.services.booking_pipeline import checklist_json, default_logistics_checklist, ensure_booking_for_pitch
+from backend.services.booking_logistics import apply_auto_logistics_to_booking, apply_auto_logistics_to_bookings
 from backend.services.pitch_generation import remove_long_dashes
 from typing import List
 from datetime import datetime, timedelta
@@ -152,6 +153,7 @@ def active_bookings(db: Session = Depends(get_db)):
         .order_by(models.Booking.created_at.desc())
         .all()
     )
+    apply_auto_logistics_to_bookings(db, bookings)
     return [_booking_payload(booking) for booking in bookings]
 
 
@@ -166,6 +168,7 @@ def completed_unrebooked(db: Session = Depends(get_db)):
         .order_by(models.Booking.created_at.desc())
         .all()
     )
+    apply_auto_logistics_to_bookings(db, bookings)
     return [_booking_payload(booking) for booking in bookings]
 
 
@@ -232,6 +235,7 @@ def update_pipeline(
     booking.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(booking)
+    apply_auto_logistics_to_booking(db, booking)
     return _booking_payload(booking)
 
 

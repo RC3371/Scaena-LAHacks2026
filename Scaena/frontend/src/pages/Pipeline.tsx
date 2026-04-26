@@ -427,31 +427,20 @@ export function Pipeline() {
                 DEAL COMMAND{selectedDeal ? ` - ${selectedDeal.venue_name.toUpperCase()}` : ""}
               </h2>
               {selectedDeal && (
-                <span className="text-[11px] font-bold text-black bg-white border-2 border-black px-2 py-1 rounded-full uppercase">
-                  {selectedDeal.next_action || "monitor"}
-                </span>
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="text-[11px] font-bold text-black bg-white border-2 border-black px-2 py-1 rounded-full uppercase shrink-0">
+                    {stageLabel(selectedDeal.conversation_stage)}
+                  </span>
+                  <span className="text-[11px] font-bold text-black bg-white border-2 border-black px-2 py-1 rounded-full uppercase truncate max-w-[520px]">
+                    {selectedDeal.next_action || "monitor"}
+                  </span>
+                </div>
               )}
             </div>
 
             {selectedDeal ? (
               <div className="p-3 grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-3">
                 <div className="space-y-3">
-                  <div className="flex flex-wrap gap-2">
-                    {STAGES.map((stage) => (
-                      <button
-                        key={stage.id}
-                        onClick={() => updatePipeline({ conversation_stage: stage.id })}
-                        className={`px-3 py-1.5 border-4 border-black rounded-xl text-[11px] font-[var(--font-bungee)] transition-all ${
-                          selectedDeal.conversation_stage === stage.id
-                            ? "bg-[var(--color-neon-yellow)] text-black shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]"
-                            : "bg-black text-[var(--color-neon-yellow)] hover:bg-zinc-900"
-                        }`}
-                      >
-                        {stage.label}
-                      </button>
-                    ))}
-                  </div>
-
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
                     <Field label="Show date">
                       <input

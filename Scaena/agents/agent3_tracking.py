@@ -17,6 +17,7 @@ agent = Agent(
     name="scaena_analytics_learning",
     seed=os.getenv("AGENT3_SEED", "scaena_tracking_seed"),
     port=8003,
+    address=os.getenv("AGENT3_ADDRESS"),
 )
 
 try:

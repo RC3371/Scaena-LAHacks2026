@@ -11,12 +11,19 @@ __pycache__/
 *.py[cod]
 .venv/
 venv/
+venv*/
 
 # Local databases and runtime logs
 *.db
 *.sqlite
 *.sqlite3
 *.log
+*.db-*
+
+# Local auth artifacts
+credentials*.json
+token*.json
+*.pem
 
 # Frontend dependencies/build output
 node_modules/

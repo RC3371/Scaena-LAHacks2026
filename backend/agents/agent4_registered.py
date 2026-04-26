@@ -5,11 +5,11 @@ from agent4_followup import generate_followup_message, generate_objection_respon
 
 agent = ChatAgent(
     name="followup_agent",
-    seed="followup-agent-seed-lahacks-2026",
+    seed=os.getenv("AGENT4_SEED", "replace-with-agent4-seed"),
     port=8003, mailbox=True, network="testnet",
     llm_config=LLMConfig(
         provider="openai",
-        api_key=os.environ.get("GEMINI_API_KEY", "AIzaSyBK4iyXpsK0qPlrDvZBORAPgGZa_Q1Ar9Q"),
+        api_key=os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_SEARCH_API_KEY") or os.getenv("GOOGLE_API_KEY"),
         model="gemini-2.5-flash",
         url="https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
         parameters=LLMParams(),

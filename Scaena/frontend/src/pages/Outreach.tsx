@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Send, MessageSquare, CheckCircle2, Pause, Play, RefreshCw, Edit3, Mail, Inbox, Link2 } from "lucide-react";
+import { Send, MessageSquare, CheckCircle2, RefreshCw, Edit3, Mail, Link2 } from "lucide-react";
 import { client } from "../api/client";
+import { CollapsibleText } from "../components/CollapsibleText";
 import { useWebSocket } from "../hooks/useWebSocket";
 import type { Conversation, Pitch } from "../types";
 
@@ -21,6 +22,7 @@ function Typewriter({ text, onComplete }: { text: string; onComplete?: () => voi
 }
 
 type RightTab = "comms" | "draft";
+type SyncState = "idle" | "syncing" | "up_to_date" | "error";
 
 type GmailStatus = {
   configured: boolean;
@@ -45,21 +47,21 @@ export function Outreach() {
   const [pitches, setPitches] = useState<Pitch[]>([]);
   const [conversations, setConversations] = useState<Record<string, Conversation>>({});
   const [activePitchId, setActivePitchId] = useState<string | null>(null);
-  const [rightTab, setRightTab] = useState<RightTab>("draft");
+  const [rightTab, setRightTab] = useState<RightTab>("comms");
   const [isDrafting, setIsDrafting] = useState(false);
   const [isFinalized, setIsFinalized] = useState(false);
-  const [autoMode, setAutoMode] = useState(false);
-  const [autoPaused, setAutoPaused] = useState(false);
+  const [autoMode, setAutoMode] = useState(true);
   const [strategyInput, setStrategyInput] = useState("");
-  const [replyInput, setReplyInput] = useState("");
-  const [replyMode, setReplyMode] = useState(false);
   const [editingDraft, setEditingDraft] = useState(false);
   const [draftText, setDraftText] = useState("");
+  const [draftEdited, setDraftEdited] = useState(false);
   const [entertainerId, setEntertainerId] = useState("");
   const [entertainerName, setEntertainerName] = useState("");
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null);
   const [gmailSyncing, setGmailSyncing] = useState(false);
+  const [syncState, setSyncState] = useState<SyncState>("idle");
   const [gmailNotice, setGmailNotice] = useState("");
+  const syncInFlightRef = useRef(false);
   const { events } = useWebSocket();
 
   const loadGmailStatus = async (id: string) => {
@@ -84,7 +86,10 @@ export function Outreach() {
       const ent = entertainers[0];
       setEntertainerId(ent.id);
       setEntertainerName(ent.name);
-      setAutoMode(ent.outreach_mode === "auto_pitch");
+      if (ent.outreach_mode !== "auto_pitch") {
+        await client.entertainers.update(ent.id, { outreach_mode: "auto_pitch" });
+      }
+      setAutoMode(true);
       await loadGmailStatus(ent.id);
       const pitchData = await client.outreach.pitches(ent.id);
       setPitches(pitchData);
@@ -114,15 +119,9 @@ export function Outreach() {
       setIsDrafting(true);
       setIsFinalized(false);
       setEditingDraft(false);
+      setDraftEdited(false);
     }
-  }, [activePitchId]);
-
-  const refreshConv = async (pitchId: string) => {
-    try {
-      const conv = await client.conversations.getByPitch(pitchId);
-      setConversations((prev) => ({ ...prev, [pitchId]: conv }));
-    } catch {}
-  };
+  }, [activePitchId, activePitch?.pitch_body]);
 
   const refreshPitchesAndConversations = async () => {
     if (!entertainerId) return;
@@ -146,26 +145,54 @@ export function Outreach() {
     }
   };
 
-  const handleSyncReplies = async () => {
-    if (!entertainerId || gmailSyncing) return;
+  const handleSyncReplies = async (silent = false) => {
+    if (!entertainerId || syncInFlightRef.current) return;
+    syncInFlightRef.current = true;
     setGmailSyncing(true);
+    setSyncState("syncing");
     setGmailNotice("");
     try {
       const result = await client.gmail.syncReplies(entertainerId);
       await refreshPitchesAndConversations();
       await loadGmailStatus(entertainerId);
-      setGmailNotice(`Imported ${result.replies_imported ?? 0} new replies from ${result.threads_checked ?? 0} Gmail threads.`);
+      const imported = result.replies_imported ?? 0;
+      const drafts = result.reply_drafts_generated ?? 0;
+      const sent = result.auto_replies_sent ?? 0;
+      if (!silent || imported > 0 || drafts > 0 || sent > 0) {
+        setGmailNotice(`Auto sync imported ${imported} replies, generated ${drafts} drafts, and sent ${sent}.`);
+      }
+      if (imported === 0 && drafts === 0 && sent === 0) {
+        setGmailNotice("Up to date.");
+      }
+      setSyncState("up_to_date");
       setRightTab("comms");
     } catch (error: any) {
       const detail = error?.response?.data?.detail || "Gmail reply sync failed. Reconnect Gmail and try again.";
       setGmailNotice(detail);
+      setSyncState("error");
       if (String(detail).toLowerCase().includes("reconnect")) {
         await loadGmailStatus(entertainerId);
       }
     } finally {
+      syncInFlightRef.current = false;
       setGmailSyncing(false);
     }
   };
+
+  useEffect(() => {
+    if (!entertainerId || !gmailStatus?.connected || !gmailStatus?.read_sync_enabled) return;
+    handleSyncReplies(true);
+    const timer = window.setInterval(() => {
+      handleSyncReplies(true);
+    }, 45000);
+    return () => window.clearInterval(timer);
+  }, [entertainerId, gmailStatus?.connected, gmailStatus?.read_sync_enabled]);
+
+  useEffect(() => {
+    if (!gmailNotice) return;
+    const timer = window.setTimeout(() => setGmailNotice(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [gmailNotice]);
 
   const handleAdjustPitch = async () => {
     if (!strategyInput.trim() || !activePitch || !entertainerId) return;
@@ -173,35 +200,18 @@ export function Outreach() {
     setIsFinalized(false);
     setEditingDraft(false);
     try {
-      await client.outreach.strategyUpdate({
+      const regenerated = await client.outreach.regeneratePitch(activePitch.id, {
         entertainer_id: entertainerId,
-        target_id: activePitch.id,
         strategy_instruction: strategyInput,
       });
-      setTimeout(async () => {
-        const pitchData = await client.outreach.pitches(entertainerId);
-        setPitches(pitchData);
-        setIsDrafting(false);
-      }, 2000);
+      setDraftText(regenerated.pitch_body || "");
+      const pitchData = await client.outreach.pitches(entertainerId);
+      setPitches(pitchData);
+      setIsDrafting(false);
     } catch {
       setIsDrafting(false);
     }
     setStrategyInput("");
-  };
-
-  const handleLogReply = async () => {
-    if (!replyInput.trim() || !activePitch || !entertainerId) return;
-    try {
-      await client.conversations.logReply({
-        entertainer_id: entertainerId,
-        target_id: activeConv?.id || activePitch.id,
-        reply_body: replyInput,
-      });
-      await refreshConv(activePitch.id);
-      setReplyInput("");
-      setReplyMode(false);
-      setRightTab("comms");
-    } catch {}
   };
 
   const handleApprove = async () => {
@@ -214,6 +224,7 @@ export function Outreach() {
       const pitchData = await client.outreach.pitches(entertainerId);
       setPitches(pitchData);
       setIsFinalized(true);
+      setDraftEdited(false);
     } catch (error: any) {
       const detail = error?.response?.data?.detail || "Gmail send failed. Check Gmail connection and recipient email.";
       window.alert(detail);
@@ -239,6 +250,8 @@ export function Outreach() {
   };
 
   const currentDraft = editingDraft ? draftText : (activePitch?.pitch_body || "");
+  const syncLabel = gmailSyncing || syncState === "syncing" ? "SYNCING" : syncState === "up_to_date" ? "UP TO DATE" : "AUTO SYNC";
+  const SyncIcon = syncState === "up_to_date" ? CheckCircle2 : RefreshCw;
 
   return (
     <div className="flex flex-col h-full overflow-hidden pr-1 pb-1">
@@ -252,13 +265,11 @@ export function Outreach() {
               {gmailStatus?.connected ? (gmailStatus.email || "GMAIL CONNECTED") : "GMAIL DISCONNECTED"}
             </span>
             {gmailStatus?.connected && gmailStatus.read_sync_enabled ? (
-              <button
-                onClick={handleSyncReplies}
-                disabled={gmailSyncing}
-                className="flex items-center gap-1 px-2 py-0.5 bg-[var(--color-neon-cyan)] text-black rounded-full border-2 border-black text-[10px] font-bold disabled:opacity-50"
+              <div
+                className="flex items-center gap-1 px-2 py-0.5 bg-[var(--color-neon-cyan)] text-black rounded-full border-2 border-black text-[10px] font-bold"
               >
-                <Inbox size={11} strokeWidth={3} /> {gmailSyncing ? "SYNCING" : "SYNC"}
-              </button>
+                <SyncIcon size={11} strokeWidth={3} className={gmailSyncing ? "animate-spin" : ""} /> {syncLabel}
+              </div>
             ) : (
               <button
                 onClick={handleConnectGmail}
@@ -271,9 +282,9 @@ export function Outreach() {
           </div>
           {autoMode && (
             <div className="hidden xl:flex items-center gap-2 bg-black border-2 border-[var(--color-neon-cyan)] px-2.5 py-1.5 rounded-full font-[var(--font-space)]">
-              <div className={`w-2 h-2 rounded-full bg-[var(--color-neon-cyan)] ${autoPaused ? "" : "animate-ping"}`} />
+              <div className="w-2 h-2 rounded-full bg-[var(--color-neon-cyan)] animate-ping" />
               <span className="text-[10px] font-bold text-[var(--color-neon-cyan)] uppercase">
-                {autoPaused ? "AUTO MODE PAUSED" : "AUTO MODE ACTIVE - SENDS AFTER COUNTDOWN"}
+                AUTO MODE ACTIVE
               </span>
             </div>
           )}
@@ -305,7 +316,7 @@ export function Outreach() {
             {pitches.map((pitch) => (
               <button
                 key={pitch.id}
-                onClick={() => { setActivePitchId(pitch.id); setIsFinalized(false); setReplyMode(false); setRightTab("draft"); }}
+                onClick={() => { setActivePitchId(pitch.id); setIsFinalized(false); }}
                 className={`w-full text-left px-3 py-2.5 rounded-xl border-4 transition-all duration-150 ${
                   activePitchId === pitch.id
                     ? "bg-[var(--color-neon-cyan)] text-black border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] -translate-y-0.5"
@@ -318,6 +329,9 @@ export function Outreach() {
                   </p>
                   <MessageSquare size={14} className={activePitchId === pitch.id ? "text-black shrink-0 mt-0.5" : "text-[var(--color-neon-cyan)] shrink-0 mt-0.5"} />
                 </div>
+                <p className={`mt-1.5 text-[10px] font-bold font-[var(--font-space)] leading-tight break-all ${activePitchId === pitch.id ? "text-black/80" : "text-zinc-400"}`}>
+                  {pitch.recipient_email || "NO TARGET EMAIL"}
+                </p>
                 <div className="flex justify-between items-center mt-2">
                   <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full uppercase font-[var(--font-space)] ${activePitchId === pitch.id ? "bg-black text-[var(--color-neon-cyan)]" : (statusBadge[pitch.status] || "bg-zinc-800 text-zinc-400")}`}>
                     {pitch.status}
@@ -337,7 +351,7 @@ export function Outreach() {
         </div>
 
         {/* Right: Workspace */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div className="relative flex-1 flex flex-col min-h-0 min-w-0">
           {activePitch ? (
             <>
               {/* Tab switcher */}
@@ -361,9 +375,10 @@ export function Outreach() {
                   {gmailStatus?.connected ? "GMAIL CONNECTED" : "GMAIL DISCONNECTED"}
                 </span>
                 {gmailStatus?.connected && gmailStatus.read_sync_enabled ? (
-                  <button onClick={handleSyncReplies} disabled={gmailSyncing} className="px-3 py-1 bg-[var(--color-neon-cyan)] text-black rounded-full border-2 border-black text-[11px] font-bold disabled:opacity-50">
-                    {gmailSyncing ? "SYNCING" : "SYNC REPLIES"}
-                  </button>
+                  <div className="flex items-center gap-1.5 px-3 py-1 bg-[var(--color-neon-cyan)] text-black rounded-full border-2 border-black text-[11px] font-bold">
+                    <SyncIcon size={12} strokeWidth={3} className={gmailSyncing ? "animate-spin" : ""} />
+                    {syncLabel}
+                  </div>
                 ) : (
                   <button onClick={handleConnectGmail} disabled={!gmailStatus?.configured} className="px-3 py-1 bg-white text-black rounded-full border-2 border-black text-[11px] font-bold disabled:opacity-50">
                     {gmailStatus?.connected ? "RECONNECT FOR SYNC" : "CONNECT GMAIL"}
@@ -371,11 +386,18 @@ export function Outreach() {
                 )}
               </div>
 
-              {gmailNotice && (
-                <div className="mb-3 bg-black border-2 border-[var(--color-neon-cyan)] rounded-xl px-3 py-2 text-[12px] text-[var(--color-neon-cyan)] font-bold font-[var(--font-space)] uppercase">
-                  {gmailNotice}
-                </div>
-              )}
+              <AnimatePresence>
+                {gmailNotice && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -8, scale: 0.98 }}
+                    animate={{ opacity: 1, y: 0, scale: 1 }}
+                    exit={{ opacity: 0, y: -8, scale: 0.98 }}
+                    className="absolute top-20 right-5 z-40 max-w-[460px] bg-black border-4 border-[var(--color-neon-cyan)] rounded-xl px-4 py-3 text-[12px] text-[var(--color-neon-cyan)] font-bold font-[var(--font-space)] uppercase shadow-[4px_4px_0px_0px_var(--color-neon-cyan)]"
+                  >
+                    {gmailNotice}
+                  </motion.div>
+                )}
+              </AnimatePresence>
 
               {/* Tab content */}
               <div className="flex-1 min-h-0 border-4 border-black bg-[var(--color-panel-bg)] rounded-2xl shadow-[4px_4px_0px_0px_var(--color-neon-cyan)] flex flex-col overflow-hidden">
@@ -387,20 +409,12 @@ export function Outreach() {
                       <h2 className="text-[13px] font-[var(--font-bungee)] text-black">COMMS LOG — {activePitch.venue_name.toUpperCase()}</h2>
                       <div className="flex items-center gap-2">
                         {gmailStatus?.connected && gmailStatus.read_sync_enabled && (
-                          <button
-                            onClick={handleSyncReplies}
-                            disabled={gmailSyncing}
-                            className="flex items-center gap-2 px-2.5 py-1 bg-white text-black border-2 border-black text-[11px] font-bold rounded-full hover:bg-zinc-100 transition-all disabled:opacity-50"
+                          <div
+                            className="flex items-center gap-2 px-2.5 py-1 bg-white text-black border-2 border-black text-[11px] font-bold rounded-full"
                           >
-                            <Inbox size={12} strokeWidth={3} /> {gmailSyncing ? "SYNCING" : "SYNC GMAIL"}
-                          </button>
+                            <SyncIcon size={12} strokeWidth={3} className={gmailSyncing ? "animate-spin" : ""} /> {syncLabel}
+                          </div>
                         )}
-                        <button
-                          onClick={() => { setReplyMode(true); }}
-                          className="flex items-center gap-2 px-2.5 py-1 bg-black text-[var(--color-neon-cyan)] border-2 border-black text-[11px] font-bold rounded-full hover:bg-[var(--color-panel-bg)] transition-all"
-                        >
-                          <Edit3 size={12} strokeWidth={3} /> LOG REPLY
-                        </button>
                       </div>
                     </div>
                     <div className="flex-1 overflow-y-auto p-6 space-y-5 font-sans">
@@ -409,12 +423,20 @@ export function Outreach() {
                           <span className="text-[11px] font-bold text-white bg-[var(--color-panel-bg)] px-2 py-0.5 rounded border border-black uppercase mb-1.5 font-[var(--font-space)]">
                             {msg.direction === "outbound" ? entertainerName || "AGENT" : activePitch.venue_name}
                           </span>
-                          <div className={`px-5 py-4 rounded-2xl border-4 border-black max-w-[88%] text-[16px] leading-[1.75] font-medium whitespace-pre-wrap ${
+                          <div className={`px-5 py-4 rounded-2xl border-4 border-black max-w-[88%] text-[16px] leading-[1.75] font-medium ${
                             msg.direction === "outbound"
                               ? "bg-[var(--color-neon-cyan)] text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rounded-tr-none"
                               : "bg-white text-black shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] rounded-tl-none"
                           }`}>
-                            {msg.body}
+                            <CollapsibleText
+                              text={msg.body}
+                              textClassName="whitespace-pre-wrap"
+                              buttonClassName={
+                                msg.direction === "outbound"
+                                  ? "bg-black text-[var(--color-neon-cyan)]"
+                                  : "bg-[var(--color-neon-cyan)] text-black"
+                              }
+                            />
                           </div>
                         </div>
                       ))}
@@ -422,31 +444,6 @@ export function Outreach() {
                         <p className="text-zinc-600 text-[13px] font-[var(--font-space)] uppercase">NO MESSAGES YET</p>
                       )}
 
-                      {/* Log Reply form */}
-                      <AnimatePresence>
-                        {replyMode && (
-                          <motion.div
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            exit={{ opacity: 0 }}
-                            className="bg-black border-4 border-[var(--color-neon-cyan)] rounded-2xl p-4 mt-4"
-                          >
-                            <p className="text-[11px] font-bold text-[var(--color-neon-cyan)] font-[var(--font-space)] uppercase mb-2">LOG INBOUND REPLY:</p>
-                            <textarea
-                              value={replyInput}
-                              onChange={(e) => setReplyInput(e.target.value)}
-                              rows={5}
-                              className="w-full bg-[var(--color-panel-bg)] border-2 border-[var(--color-neon-cyan)] rounded-lg px-4 py-3 text-[16px] leading-[1.6] text-white resize-none focus:outline-none font-sans"
-                              placeholder="Paste their reply here..."
-                              autoFocus
-                            />
-                            <div className="flex gap-2 mt-2">
-                              <button onClick={handleLogReply} className="px-4 py-2 bg-[var(--color-neon-cyan)] text-black font-bold text-[12px] rounded-lg border-2 border-black">LOG REPLY</button>
-                              <button onClick={() => setReplyMode(false)} className="px-4 py-2 bg-zinc-700 text-white font-bold text-[12px] rounded-lg border-2 border-black">CANCEL</button>
-                            </div>
-                          </motion.div>
-                        )}
-                      </AnimatePresence>
                     </div>
                   </div>
                 )}
@@ -462,14 +459,6 @@ export function Outreach() {
                           <span className="hidden lg:inline-flex text-[11px] font-bold text-black bg-white px-2 py-1 rounded-full border-2 border-black max-w-[260px] truncate">
                             TO: {activePitch.recipient_email}
                           </span>
-                        )}
-                        {autoMode && (
-                          <button
-                            onClick={() => setAutoPaused(!autoPaused)}
-                            className={`flex items-center gap-2 px-2.5 py-1 border-2 border-black text-[11px] font-bold rounded-full transition-all ${autoPaused ? "bg-[var(--color-neon-green)] text-black" : "bg-black text-white"}`}
-                          >
-                            {autoPaused ? <><Play size={12} strokeWidth={3} /> RESUME</> : <><Pause size={12} strokeWidth={3} /> PAUSE AUTO</>}
-                          </button>
                         )}
                         {isDrafting ? (
                           <span className="text-[11px] font-bold text-black flex items-center gap-2 bg-white px-2 py-1 rounded-full border-2 border-black">
@@ -489,7 +478,10 @@ export function Outreach() {
                         <div className="relative min-h-[520px] h-full">
                           <textarea
                             value={draftText}
-                            onChange={(e) => setDraftText(e.target.value)}
+                            onChange={(e) => {
+                              setDraftText(e.target.value);
+                              setDraftEdited(true);
+                            }}
                             className="w-full min-h-[520px] h-full bg-black border-4 border-[var(--color-neon-cyan)] rounded-xl p-6 text-[17px] text-white resize-none focus:outline-none font-sans leading-[1.75] shadow-[4px_4px_0px_0px_var(--color-neon-cyan)]"
                           />
                           <button
@@ -566,14 +558,20 @@ export function Outreach() {
                           >
                             DISCARD
                           </button>
-                          <button
-                            disabled={isDrafting}
-                            onClick={handleApprove}
-                            className="px-5 py-2 bg-[var(--color-neon-cyan)] text-black border-4 border-black text-[12px] font-[var(--font-bungee)] rounded-xl hover:-translate-y-0.5 hover:shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] transition-all flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
-                          >
-                            <Send size={16} strokeWidth={3} />
-                            {autoMode ? "APPROVE & SEND" : "APPROVE PITCH"}
-                          </button>
+                          {autoMode && !draftEdited ? (
+                            <div className="px-4 py-2 bg-zinc-900 border-2 border-[var(--color-neon-cyan)] text-[var(--color-neon-cyan)] text-[12px] font-bold rounded-xl uppercase">
+                              AUTO SENDS WITHOUT APPROVAL
+                            </div>
+                          ) : (
+                            <button
+                              disabled={isDrafting}
+                              onClick={handleApprove}
+                              className="px-5 py-2 bg-[var(--color-neon-cyan)] text-black border-4 border-black text-[12px] font-[var(--font-bungee)] rounded-xl hover:-translate-y-0.5 hover:shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] transition-all flex items-center gap-2 disabled:opacity-40 disabled:pointer-events-none"
+                            >
+                              <Send size={16} strokeWidth={3} />
+                              {autoMode ? "SEND EDIT" : "APPROVE & SEND"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     )}

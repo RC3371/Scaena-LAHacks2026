@@ -13,7 +13,7 @@ class EntertainerCreate(BaseModel):
     highlights: Optional[str] = None
     links: Optional[str] = None
     current_rate: Optional[float] = None
-    outreach_mode: str = "manual_approve"
+    outreach_mode: str = "auto_pitch"
 
 
 class EntertainerUpdate(BaseModel):
@@ -100,6 +100,31 @@ class PitchCreate(BaseModel):
     pitch_body: str
     proposed_rate: Optional[float] = None
     status: str = "draft"
+
+
+class PitchGenerateCreate(BaseModel):
+    entertainer_id: str
+    venue_id: Optional[str] = None
+    venue_name: Optional[str] = None
+    venue_type: Optional[str] = None
+    recipient_email: Optional[str] = None
+    venue_contact_approach: Optional[str] = None
+    why_fits: Optional[str] = None
+    source_url: Optional[str] = None
+    specific_examples: Optional[str] = None
+    proposed_rate: Optional[float] = None
+    status: str = "draft"
+
+
+class RebookPitchCreate(BaseModel):
+    entertainer_id: str
+    booking_id: str
+    status: str = "draft"
+
+
+class PitchRegenerateRequest(BaseModel):
+    entertainer_id: Optional[str] = None
+    strategy_instruction: Optional[str] = None
 
 
 class PitchUpdate(BaseModel):

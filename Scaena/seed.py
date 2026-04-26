@@ -11,6 +11,7 @@ load_dotenv()
 
 from backend.database import init_db, SessionLocal
 from backend import models
+from backend.services.pitch_generation import generate_pitch_for_venue
 import json
 from datetime import datetime, timedelta
 
@@ -37,7 +38,7 @@ def seed():
         highlights="Goal: earn $10k+, reach 1000+ people. Targeting college campuses, music festivals, music shows, and bars.",
         links=json.dumps({"instagram": "@joebruin_rap", "tiktok": "@joebruinofficial", "youtube": "JoeBruinRap"}),
         current_rate=350.0,
-        outreach_mode="manual_approve",
+        outreach_mode="auto_pitch",
     )
     db.add(joe)
 
@@ -45,13 +46,13 @@ def seed():
     venue_data = [
         ("UCLA Campus Events", "Campus Booking Team", "ucla-campus-events@example.com", "College", "$350-600/show", 0.95, "Email student activities board", "Joe's college-rap style is a perfect match for UCLA's 45,000-student campus crowd and high-energy event culture."),
         ("USC Spring Concert", "Concerts Committee", "usc-spring-concert@example.com", "College", "$300-550/show", 0.92, "Contact student programming board", "USC's Greek life and campus events scene drives huge turnout for emerging hip-hop acts with strong social presence."),
-        ("The Roxy Theatre", "Talent Buyer", "roxy-booking@example.com", "Music Venue", "$300-500/show", 0.90, "Submit EPK to booking manager", "The Roxy's Sunset Strip stage hosts LA's best emerging acts — ideal for Joe's genre and crowd demographic."),
-        ("UCSD Sun God Festival", "Festival Programming", "ucsd-sungod@example.com", "Festival", "$400-700/show", 0.88, "Submit via festival application portal", "Sun God draws 20,000+ students per year — massive exposure aligned with Joe's 1000+ people goal."),
-        ("Bardot Hollywood", "Nightlife Booking", "bardot-booking@example.com", "Bar", "$250-400/show", 0.85, "DM booking manager on Instagram", "Bardot's hip-hop nights pull a college-age crowd that matches Joe's fanbase — great for building local presence."),
-        ("The Troubadour", "Talent Buyer", "troubadour-booking@example.com", "Music Venue", "$350-600/show", 0.87, "Email booking desk", "West Hollywood institution with loyal music fans — a Troubadour credit adds real industry credibility."),
+        ("The Roxy Theatre", "Talent Buyer", "roxy-booking@example.com", "Music Venue", "$300-500/show", 0.90, "Submit EPK to booking manager", "The Roxy's Sunset Strip stage hosts LA's best emerging acts, ideal for Joe's genre and crowd demographic."),
+        ("UCSD Sun God Festival", "Festival Programming", "ucsd-sungod@example.com", "Festival", "$400-700/show", 0.88, "Submit via festival application portal", "Sun God draws 20,000+ students per year, massive exposure aligned with Joe's 1000+ people goal."),
+        ("Bardot Hollywood", "Nightlife Booking", "bardot-booking@example.com", "Bar", "$250-400/show", 0.85, "DM booking manager on Instagram", "Bardot's hip-hop nights pull a college-age crowd that matches Joe's fanbase, great for building local presence."),
+        ("The Troubadour", "Talent Buyer", "troubadour-booking@example.com", "Music Venue", "$350-600/show", 0.87, "Email booking desk", "West Hollywood institution with loyal music fans. A Troubadour credit adds real industry credibility."),
         ("Harvard & Stone", "Venue Manager", "harvard-stone-booking@example.com", "Bar", "$200-350/show", 0.78, "Contact owner directly via email", "Rock/hip-hop crossover bar in East Hollywood with built-in late-night crowd, easy to fill for new artists."),
-        ("UC Berkeley Cal Performances", "Student Union Programming", "cal-performances@example.com", "College", "$350-600/show", 0.85, "Reach out to student union programming", "Berkeley's progressive student culture actively books emerging independent hip-hop — strong fit for Joe."),
-        ("The Echo / Echoplex", "Local Booking Desk", "echo-booking@example.com", "Music Venue", "$250-450/show", 0.83, "Submit to booking via website form", "Echo Park venue known for launching LA artists — strong community vibe and repeat-audience loyalty."),
+        ("UC Berkeley Cal Performances", "Student Union Programming", "cal-performances@example.com", "College", "$350-600/show", 0.85, "Reach out to student union programming", "Berkeley's progressive student culture actively books emerging independent hip-hop, strong fit for Joe."),
+        ("The Echo / Echoplex", "Local Booking Desk", "echo-booking@example.com", "Music Venue", "$250-450/show", 0.83, "Submit to booking via website form", "Echo Park venue known for launching LA artists, strong community vibe and repeat-audience loyalty."),
         ("Coachella Valley Music Festival", "Emerging Stage Talent", "coachella-emerging@example.com", "Festival", "$500-1000/show", 0.80, "Submit press kit to talent buyer", "Coachella's emerging stage is an achievable target for acts with regional buzz and growing social numbers."),
     ]
     venues = []
@@ -72,7 +73,7 @@ def seed():
         venues.append(v)
     db.commit()
 
-    # Week 1 pitches — sent 3 weeks ago
+    # Week 1 pitches, sent 3 weeks ago
     week1_scenarios = [
         ("UCLA Campus Events", "booked", "accepted", 400.0),
         ("USC Spring Concert", "responded", "negotiating", None),
@@ -88,27 +89,44 @@ def seed():
 
     pitches_w1 = []
     batch_id_1 = "batch-week1"
-    pitch_bodies = {
-        "UCLA Campus Events": "Hey,\n\nI'm Joe Bruin — a rapper out of LA with 4,800 followers and a sound built for college crowds. I do high-energy sets that get people moving, and I've been performing for 2 years at venues across Southern California.\n\nThink your campus events crowd would be into it. My rate is $350/show — happy to work with your budget.\n\nWould love to get on the calendar before the semester wraps.\n\nJoe",
-        "USC Spring Concert": "What's up,\n\nHeard USC Spring Concert is coming up — I'm Joe Bruin, a hip-hop artist from LA with a college-crowd following (4,800+ across socials). My sets are built for exactly this kind of event.\n\nLet me know if there's a slot. Rate starts at $350 but I'm flexible for the right fit.\n\nJoe Bruin",
-        "The Roxy Theatre": "Hi,\n\nI'm Joe Bruin, an independent rapper based in LA. I've been gigging around SoCal for 2 years and I'm ready to step up to a real stage like The Roxy.\n\nI bring consistent energy, a tight 30-minute set, and a following that actually shows up. Rate is $350/show.\n\nWorth a conversation?\n\nJoe",
-        "UCSD Sun God Festival": "Hey,\n\nReaching out about Sun God — I'm Joe Bruin, LA-based rapper, 4,800 social followers, and I make music that hits hard at outdoor festivals. I do full sets or short showcase slots.\n\nMy rate is $350/show but I'm open to discussing based on the lineup slot.\n\nJoe Bruin",
-        "Bardot Hollywood": "Hi,\n\nI'm Joe — hip-hop artist from LA, 2 years performing, strong social presence (4.8K followers). Looking to book a night at Bardot. My crowd is exactly the kind that fills a bar on a weekend.\n\nRate is $300-350 depending on the night. Can we make something work?\n\nJoe",
-        "The Troubadour": "Hi,\n\nI'm Joe Bruin, an independent rapper from LA. The Troubadour is on my bucket list — I've been building toward a show there for two years.\n\nI bring a polished live set, social promotion to my 4,800 followers, and consistent energy. Rate is $350/show.\n\nOpen to chatting?\n\nJoe",
-        "Harvard & Stone": "Hey,\n\nI'm Joe Bruin — rapper, LA-based, looking to book a late night set at Harvard & Stone. I play hip-hop with a lot of crowd energy and always draw.\n\nRate is $250-300 for a bar set. Let me know if there's a slot.\n\nJoe",
-        "UC Berkeley Cal Performances": "Hi,\n\nI'm Joe Bruin, an independent hip-hop artist out of LA, 2 years performing and 4,800 followers across platforms. My music speaks to college audiences — authentic, high-energy, and crowd-focused.\n\nWould love to bring a set to Berkeley. Rate is $350/show.\n\nJoe",
-        "The Echo / Echoplex": "Hey,\n\nI'm Joe Bruin — rapper, LA local, been building my fanbase for 2 years. The Echo is the kind of room I've been working toward. I have 4,800 social followers who show up for live shows.\n\nLooking for a booking slot. Rate is $300-350.\n\nJoe",
-        "Coachella Valley Music Festival": "Hello,\n\nI'm Joe Bruin — independent hip-hop artist from Los Angeles. I'm building toward the Coachella Emerging Stage and I believe my sound and following are a good fit for what you're looking for.\n\nI bring a high-energy set, strong social promotion, and a growing fanbase (4,800 followers, 2 years performing).\n\nHappy to share my EPK. Rate is $350+.\n\nJoe",
+    original_asi_key = os.environ.get("ASI1_API_KEY")
+    os.environ["ASI1_API_KEY"] = "placeholder"
+    entertainer_payload = {
+        "name": joe.name,
+        "type": joe.type,
+        "genre": joe.genre,
+        "location": joe.location,
+        "experience_years": joe.experience_years,
+        "social_followers": joe.social_followers,
+        "highlights": joe.highlights,
+        "current_rate": joe.current_rate,
     }
+    generated_pitches = {}
+    for venue in venues:
+        generated_pitches[venue.name] = generate_pitch_for_venue(entertainer_payload, {
+            "name": venue.name,
+            "venue_type": venue.venue_type,
+            "contact_approach": venue.contact_approach,
+            "why_fits": venue.why_fits,
+            "specific_examples": venue.specific_examples,
+        }, joe.current_rate)
+    if original_asi_key is None:
+        os.environ.pop("ASI1_API_KEY", None)
+    else:
+        os.environ["ASI1_API_KEY"] = original_asi_key
     for i, (venue_name, status, response_type, neg_price) in enumerate(week1_scenarios):
+        generated_pitch = generated_pitches.get(venue_name, {
+            "subject": f"Performance booking: Joe Bruin for {venue_name}",
+            "body": f"Hi,\n\nWe represent Joe Bruin, a rapper from LA looking to book a show at {venue_name}.\n\nRate: $350/show.\n\nSincerely,\nJoe Bruin's Team",
+        })
         p = models.Pitch(
             entertainer_id=joe.id,
             batch_id=batch_id_1,
             venue_name=venue_name,
             entertainer_type="rapper",
             recipient_email=next((email for name, _, email, *_ in venue_data if name == venue_name), None),
-            pitch_subject=f"Performance Booking — Joe Bruin (Rapper) for {venue_name}",
-            pitch_body=pitch_bodies.get(venue_name, f"Hi,\n\nI'm Joe Bruin, a rapper from LA looking to book a show at {venue_name}.\n\nRate: $350/show.\n\nJoe"),
+            pitch_subject=generated_pitch["subject"],
+            pitch_body=generated_pitch["body"],
             proposed_rate=350.0,
             status=status,
             response_type=response_type,
@@ -148,11 +166,11 @@ def seed():
 
         # Reply messages for responded pitches
         replies = {
-            "accepted": "Joe! Love the energy — we'd love to have you. Our rate for emerging acts is $400/show. Does that work for a date in May?",
+            "accepted": "Joe! Love the energy, we'd love to have you. Our rate for emerging acts is $400/show. Does that work for a date in May?",
             "negotiating": "Hey Joe, thanks for reaching out. We're interested but a bit tight on budget. Could you work with $280? We do good crowd numbers.",
             "interested": "Hey! This looks great. Can you send your performance reel and a few dates you're free? We're booking out the next 6 weeks.",
             "rejected": "Thanks for reaching out, Joe. We're fully booked through the semester. Best of luck with the music!",
-            "maybe": "Hi Joe, nice pitch. We're locking in the fall lineup in a couple months — follow up then and we'll see what we can do.",
+            "maybe": "Hi Joe, nice pitch. We're locking in the fall lineup in a couple months. Follow up then and we'll see what we can do.",
         }
         if response_type in replies:
             db.add(models.ConversationMessage(
@@ -212,7 +230,7 @@ def seed():
     # Agent events (simulated history)
     events = [
         ("agent1", "complete", "Found 10 venues for Joe Bruin. Rate: $350/show. Sending to Agent 2."),
-        ("agent2", "complete", "10 pitches generated (mode: manual_approve)"),
+        ("agent2", "complete", "10 pitches generated (mode: auto_pitch)"),
         ("agent3", "insight", "Direct, personal tone with social data resonated with college bookers"),
         ("agent4", "followup_ready", "Follow-up #1 ready for USC Spring Concert"),
         ("agent3", "complete", "Round 1 insights ready for approval."),

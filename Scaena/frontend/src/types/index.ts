@@ -24,6 +24,7 @@ export interface Entertainer {
   links?: string;
   current_rate?: number;
   outreach_mode: "manual_approve" | "auto_pitch";
+  created_at: string;
 }
 
 export interface Venue {

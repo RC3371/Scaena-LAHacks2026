@@ -123,15 +123,18 @@ export function Onboarding() {
       social_followers: form.social_followers ? parseInt(form.social_followers) : undefined,
       highlights: form.objectives,
       links,
-      outreach_mode: "manual_approve" as const,
+      outreach_mode: "auto_pitch" as const,
     };
     try {
+      let savedProfile;
       if (existingId) {
-        await client.entertainers.update(existingId, payload);
+        savedProfile = await client.entertainers.update(existingId, payload);
       } else {
-        await client.entertainers.create(payload);
+        savedProfile = await client.entertainers.create(payload);
       }
       localStorage.setItem("scaena_onboarded", "true");
+      localStorage.setItem("scaena_onboarded_profile_id", savedProfile.id);
+      localStorage.setItem("scaena_onboarded_profile_created_at", savedProfile.created_at);
       navigate("/");
     } catch (e) {
       console.error(e);
@@ -336,7 +339,19 @@ export function Onboarding() {
           <ChevronRight size={22} strokeWidth={3} />
         </button>
         <button
-          onClick={() => { localStorage.setItem("scaena_onboarded", "true"); navigate("/"); }}
+          onClick={() => {
+            if (existingId) {
+              localStorage.setItem("scaena_onboarded", "true");
+              localStorage.setItem("scaena_onboarded_profile_id", existingId);
+              client.entertainers.get(existingId)
+                .then((ent) => {
+                  localStorage.setItem("scaena_onboarded_profile_created_at", ent.created_at);
+                  navigate("/");
+                })
+                .catch(() => navigate("/"));
+            }
+          }}
+          disabled={!existingId}
           className="text-zinc-500 text-[13px] font-[var(--font-space)] underline hover:text-zinc-300 transition-colors uppercase"
         >
           Skip for now

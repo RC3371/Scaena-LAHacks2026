@@ -4,6 +4,8 @@ from sqlalchemy import and_
 from backend.database import get_db
 from backend import models, schemas
 from backend.websocket_manager import manager
+from backend.services.booking_pipeline import ensure_booking_for_pitch
+from backend.services.pitch_generation import generate_pitch_for_venue, generate_rebook_pitch, remove_long_dashes
 from typing import List, Optional
 from datetime import datetime, timedelta
 import asyncio
@@ -18,32 +20,261 @@ except Exception:
 router = APIRouter(prefix="/outreach", tags=["outreach"])
 
 
-@router.post("/pitch")
-def save_pitch(data: schemas.PitchCreate, db: Session = Depends(get_db)):
-    pitch = models.Pitch(**data.model_dump())
-    if data.status == "sent":
+def _save_pitch_with_conversation(db: Session, payload: dict) -> models.Pitch:
+    payload = {**payload}
+    payload["pitch_subject"] = remove_long_dashes(payload.get("pitch_subject"))
+    payload["pitch_body"] = remove_long_dashes(payload.get("pitch_body"))
+    pitch = models.Pitch(**payload)
+    if payload.get("status") == "sent":
         pitch.sent_at = datetime.utcnow()
     db.add(pitch)
-    db.commit()
-    db.refresh(pitch)
-    # Auto-create conversation record
+    db.flush()
+
     conv = models.Conversation(
-        entertainer_id=data.entertainer_id,
+        entertainer_id=payload["entertainer_id"],
         pitch_id=pitch.id,
-        venue_name=data.venue_name,
+        venue_name=payload.get("venue_name"),
     )
     db.add(conv)
-    # Add initial pitch as conversation message
+    db.flush()
+
     msg = models.ConversationMessage(
         conversation_id=conv.id,
         direction="outbound",
         message_type="initial_pitch",
-        subject=data.pitch_subject,
-        body=data.pitch_body,
+        subject=payload.get("pitch_subject"),
+        body=payload.get("pitch_body"),
     )
     db.add(msg)
     db.commit()
+    db.refresh(pitch)
+    return pitch
+
+
+def _entertainer_payload(entertainer: models.Entertainer) -> dict:
+    return {
+        "id": entertainer.id,
+        "name": entertainer.name,
+        "type": entertainer.type,
+        "genre": entertainer.genre,
+        "location": entertainer.location,
+        "experience_years": entertainer.experience_years,
+        "social_followers": entertainer.social_followers,
+        "highlights": entertainer.highlights,
+        "current_rate": entertainer.current_rate,
+    }
+
+
+def _venue_payload(venue: models.Venue | None, pitch: models.Pitch | None = None, data: schemas.PitchGenerateCreate | None = None) -> dict:
+    return {
+        "name": (venue.name if venue else None) or (pitch.venue_name if pitch else None) or (data.venue_name if data else None),
+        "contact_name": (venue.contact_name if venue else None),
+        "venue_type": (venue.venue_type if venue else None) or (data.venue_type if data else None),
+        "contact_email": (venue.contact_email if venue else None) or (pitch.recipient_email if pitch else None) or (data.recipient_email if data else None),
+        "contact_approach": (venue.contact_approach if venue else None) or (pitch.venue_contact_approach if pitch else None) or (data.venue_contact_approach if data else None),
+        "why_fits": (venue.why_fits if venue else None) or (data.why_fits if data else None),
+        "source_url": (venue.source_url if venue else None) or (data.source_url if data else None),
+        "specific_examples": (venue.specific_examples if venue else None) or (data.specific_examples if data else None),
+    }
+
+
+@router.post("/pitch")
+def save_pitch(data: schemas.PitchCreate, db: Session = Depends(get_db)):
+    pitch = _save_pitch_with_conversation(db, data.model_dump())
     return {"pitch_id": pitch.id}
+
+
+@router.post("/pitch/generated")
+async def generate_and_save_pitch(data: schemas.PitchGenerateCreate, db: Session = Depends(get_db)):
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == data.entertainer_id).first()
+    if not entertainer:
+        raise HTTPException(status_code=404, detail="Entertainer not found")
+
+    venue = None
+    if data.venue_id:
+        venue = (
+            db.query(models.Venue)
+            .filter(models.Venue.id == data.venue_id, models.Venue.entertainer_id == data.entertainer_id)
+            .first()
+        )
+        if not venue:
+            raise HTTPException(status_code=404, detail="Venue not found")
+
+    venue_payload = _venue_payload(venue, data=data)
+    if not venue_payload.get("name"):
+        raise HTTPException(status_code=400, detail="venue_id or venue_name is required")
+
+    entertainer_payload = _entertainer_payload(entertainer)
+    rate = data.proposed_rate or entertainer.current_rate or 350
+    generated = generate_pitch_for_venue(entertainer_payload, venue_payload, rate)
+
+    pitch = _save_pitch_with_conversation(db, {
+        "entertainer_id": data.entertainer_id,
+        "venue_id": venue.id if venue else None,
+        "venue_name": venue_payload["name"],
+        "entertainer_type": entertainer.type,
+        "recipient_email": venue_payload.get("contact_email"),
+        "venue_contact_approach": venue_payload.get("contact_approach"),
+        "pitch_subject": generated["subject"],
+        "pitch_body": generated["body"],
+        "proposed_rate": rate,
+        "status": data.status,
+    })
+
+    await manager.broadcast({
+        "agent_id": "agent2",
+        "event_type": "pitch_ready",
+        "entertainer_id": data.entertainer_id,
+        "message": f"Generated {generated.get('generation_source', 'fallback').upper()} pitch for {venue_payload['name']}.",
+        "target": venue_payload["name"],
+        "pitch_id": pitch.id,
+        "status": data.status,
+    })
+    return {
+        "pitch_id": pitch.id,
+        "generation_source": generated.get("generation_source"),
+        "pitch_subject": generated["subject"],
+        "pitch_body": generated["body"],
+    }
+
+
+@router.post("/pitch/rebook")
+async def generate_and_save_rebook_pitch(data: schemas.RebookPitchCreate, db: Session = Depends(get_db)):
+    booking = (
+        db.query(models.Booking)
+        .filter(models.Booking.id == data.booking_id)
+        .filter(models.Booking.entertainer_id == data.entertainer_id)
+        .first()
+    )
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == data.entertainer_id).first()
+    if not entertainer:
+        raise HTTPException(status_code=404, detail="Entertainer not found")
+
+    original_pitch = None
+    if booking.pitch_id:
+        original_pitch = db.query(models.Pitch).filter(models.Pitch.id == booking.pitch_id).first()
+    if not original_pitch and booking.original_pitch_id:
+        original_pitch = db.query(models.Pitch).filter(models.Pitch.id == booking.original_pitch_id).first()
+
+    venue = None
+    if original_pitch and original_pitch.venue_id:
+        venue = db.query(models.Venue).filter(models.Venue.id == original_pitch.venue_id).first()
+    if not venue and booking.venue_name:
+        venue = (
+            db.query(models.Venue)
+            .filter(models.Venue.entertainer_id == data.entertainer_id)
+            .filter(models.Venue.name == booking.venue_name)
+            .order_by(models.Venue.created_at.desc())
+            .first()
+        )
+
+    rate = booking.agreed_rate or (original_pitch.proposed_rate if original_pitch else None) or entertainer.current_rate or 350
+    generated = generate_rebook_pitch(
+        _entertainer_payload(entertainer),
+        {
+            "id": booking.id,
+            "venue_name": booking.venue_name,
+            "agreed_rate": booking.agreed_rate,
+            "show_summary": booking.show_summary,
+            "conversation_stage": booking.conversation_stage,
+        },
+        rate,
+    )
+
+    pitch = _save_pitch_with_conversation(db, {
+        "entertainer_id": data.entertainer_id,
+        "venue_id": venue.id if venue else (original_pitch.venue_id if original_pitch else None),
+        "batch_id": f"rebook-{booking.id}",
+        "venue_name": booking.venue_name,
+        "entertainer_type": entertainer.type,
+        "recipient_email": (
+            (original_pitch.recipient_email if original_pitch else None)
+            or (venue.contact_email if venue else None)
+        ),
+        "venue_contact_approach": "Rebook from prior successful show",
+        "pitch_subject": generated["subject"],
+        "pitch_body": generated["body"],
+        "proposed_rate": rate,
+        "strategy_note": "Agent 2 rebook directive: ask whether the venue wants to book another show, not an initial booking.",
+        "status": data.status,
+    })
+
+    booking.rebooking_sent = True
+    db.commit()
+
+    await manager.broadcast({
+        "agent_id": "agent2",
+        "event_type": "pitch_ready",
+        "entertainer_id": data.entertainer_id,
+        "message": f"Generated rebook outreach for {booking.venue_name}.",
+        "target": booking.venue_name,
+        "pitch_id": pitch.id,
+        "booking_id": booking.id,
+        "status": data.status,
+        "generation_source": generated.get("generation_source"),
+    })
+    return {
+        "pitch_id": pitch.id,
+        "booking_id": booking.id,
+        "generation_source": generated.get("generation_source"),
+        "pitch_subject": generated["subject"],
+        "pitch_body": generated["body"],
+    }
+
+
+@router.post("/pitch/{pitch_id}/regenerate")
+async def regenerate_pitch(pitch_id: str, data: schemas.PitchRegenerateRequest, db: Session = Depends(get_db)):
+    pitch = db.query(models.Pitch).filter(models.Pitch.id == pitch_id).first()
+    if not pitch:
+        raise HTTPException(status_code=404, detail="Pitch not found")
+
+    entertainer_id = data.entertainer_id or pitch.entertainer_id
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == entertainer_id).first()
+    if not entertainer:
+        raise HTTPException(status_code=404, detail="Entertainer not found")
+
+    venue = None
+    if pitch.venue_id:
+        venue = db.query(models.Venue).filter(models.Venue.id == pitch.venue_id).first()
+    if not venue and pitch.venue_name:
+        venue = (
+            db.query(models.Venue)
+            .filter(models.Venue.entertainer_id == entertainer_id, models.Venue.name == pitch.venue_name)
+            .first()
+        )
+
+    venue_payload = _venue_payload(venue, pitch=pitch)
+    generated = generate_pitch_for_venue(
+        _entertainer_payload(entertainer),
+        venue_payload,
+        pitch.proposed_rate or entertainer.current_rate or 350,
+        strategy_instruction=data.strategy_instruction,
+    )
+
+    pitch.pitch_subject = generated["subject"]
+    pitch.pitch_body = generated["body"]
+    pitch.strategy_note = data.strategy_instruction
+    db.commit()
+    db.refresh(pitch)
+
+    await manager.broadcast({
+        "agent_id": "agent2",
+        "event_type": "pitch_ready",
+        "entertainer_id": entertainer_id,
+        "message": f"Regenerated {generated.get('generation_source', 'fallback').upper()} pitch for {pitch.venue_name}.",
+        "target": pitch.venue_name,
+        "pitch_id": pitch.id,
+        "status": pitch.status,
+    })
+    return {
+        "pitch_id": pitch.id,
+        "generation_source": generated.get("generation_source"),
+        "pitch_subject": pitch.pitch_subject,
+        "pitch_body": pitch.pitch_body,
+    }
 
 
 @router.get("/pitches/{entertainer_id}", response_model=List[schemas.PitchOut])
@@ -57,9 +288,11 @@ def list_pitches(entertainer_id: str, status: Optional[str] = None, db: Session 
 @router.get("/pitch-by-target/{target_id}")
 def get_pitch_by_target(target_id: str, db: Session = Depends(get_db)):
     conv = db.query(models.Conversation).filter(models.Conversation.id == target_id).first()
-    if not conv:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    pitch = db.query(models.Pitch).filter(models.Pitch.id == conv.pitch_id).first()
+    pitch = None
+    if conv:
+        pitch = db.query(models.Pitch).filter(models.Pitch.id == conv.pitch_id).first()
+    if not pitch:
+        pitch = db.query(models.Pitch).filter(models.Pitch.id == target_id).first()
     if not pitch:
         raise HTTPException(status_code=404, detail="Pitch not found")
     return {
@@ -82,9 +315,16 @@ def update_pitch(pitch_id: str, data: schemas.PitchUpdate, db: Session = Depends
         # Create booking if accepted
     if "response_type" in update and update["response_type"] == "accepted":
         update["status"] = "responded"
+    if "pitch_subject" in update:
+        update["pitch_subject"] = remove_long_dashes(update["pitch_subject"])
+    if "pitch_body" in update:
+        update["pitch_body"] = remove_long_dashes(update["pitch_body"])
     for k, v in update.items():
         setattr(pitch, k, v)
     db.commit()
+    if pitch.response_type == "accepted":
+        conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == pitch.id).first()
+        ensure_booking_for_pitch(db, pitch, conv)
     return {"ok": True}
 
 
@@ -141,7 +381,10 @@ def save_batch(data: schemas.BatchCreate, db: Session = Depends(get_db)):
 
 @router.post("/followup")
 def save_followup(data: schemas.FollowUpCreate, db: Session = Depends(get_db)):
-    fu = models.FollowUp(**data.model_dump())
+    payload = data.model_dump()
+    payload["subject"] = remove_long_dashes(payload.get("subject"))
+    payload["body"] = remove_long_dashes(payload.get("body"))
+    fu = models.FollowUp(**payload)
     db.add(fu)
     # Increment pitch followup_count
     pitch = db.query(models.Pitch).filter(models.Pitch.id == data.pitch_id).first()
@@ -154,8 +397,8 @@ def save_followup(data: schemas.FollowUpCreate, db: Session = Depends(get_db)):
             conversation_id=conv.id,
             direction="outbound",
             message_type=f"followup_{data.followup_number}",
-            subject=data.subject,
-            body=data.body,
+            subject=payload["subject"],
+            body=payload["body"],
         )
         db.add(msg)
     db.commit()
@@ -184,7 +427,10 @@ def log_followup_result(data: schemas.FollowUpResultCreate, db: Session = Depend
 
 @router.post("/reengagement")
 def save_reengagement(data: schemas.ReengagementCreate, db: Session = Depends(get_db)):
-    re = models.Reengagement(**data.model_dump())
+    payload = data.model_dump()
+    payload["subject"] = remove_long_dashes(payload.get("subject"))
+    payload["body"] = remove_long_dashes(payload.get("body"))
+    re = models.Reengagement(**payload)
     db.add(re)
     db.commit()
     db.refresh(re)

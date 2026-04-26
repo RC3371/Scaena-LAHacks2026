@@ -13,7 +13,8 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 def analytics_summary(entertainer_id: str, db: Session = Depends(get_db)):
     pitches = db.query(models.Pitch).filter(models.Pitch.entertainer_id == entertainer_id).all()
     total_pitches = len(pitches)
-    sent = [p for p in pitches if p.status in ("sent", "responded", "accepted", "rejected")]
+    sent_statuses = ("sent", "responded", "accepted", "rejected", "booked")
+    sent = [p for p in pitches if p.status in sent_statuses]
     responded = [p for p in pitches if p.response_type is not None]
     accepted = [p for p in pitches if p.response_type == "accepted"]
     rejected = [p for p in pitches if p.response_type == "rejected"]
@@ -28,7 +29,7 @@ def analytics_summary(entertainer_id: str, db: Session = Depends(get_db)):
         vt = p.venue_name or "Other"
         if vt not in by_venue:
             by_venue[vt] = {"sent": 0, "responded": 0, "accepted": 0}
-        if p.status in ("sent", "responded", "accepted", "rejected"):
+        if p.status in sent_statuses:
             by_venue[vt]["sent"] += 1
         if p.response_type:
             by_venue[vt]["responded"] += 1

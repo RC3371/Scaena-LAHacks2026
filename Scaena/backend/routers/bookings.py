@@ -2,6 +2,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from backend.database import get_db
 from backend import models, schemas
+from backend.services.booking_pipeline import ensure_booking_for_pitch
+from backend.services.pitch_generation import remove_long_dashes
 from typing import List
 from datetime import datetime
 
@@ -12,7 +14,7 @@ router = APIRouter(prefix="/bookings", tags=["bookings"])
 def active_bookings(db: Session = Depends(get_db)):
     return (
         db.query(models.Booking)
-        .filter(models.Booking.conversation_stage.in_(["confirmed", "logistics", "pre_show", "post_show"]))
+        .filter(models.Booking.conversation_stage.in_(["confirmed", "logistics", "pre_show"]))
         .all()
     )
 
@@ -35,24 +37,31 @@ def create_booking(pitch_id: str, db: Session = Depends(get_db)):
     if not pitch:
         raise HTTPException(status_code=404, detail="Pitch not found")
     conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == pitch_id).first()
-    booking = models.Booking(
-        entertainer_id=pitch.entertainer_id,
-        pitch_id=pitch_id,
-        target_id=conv.id if conv else pitch_id,
-        venue_name=pitch.venue_name,
-        agreed_rate=pitch.negotiated_price or pitch.proposed_rate,
-        original_pitch_id=pitch_id,
-        conversation_stage="confirmed",
-    )
-    db.add(booking)
+    booking, created = ensure_booking_for_pitch(db, pitch, conv)
+    return {"booking_id": booking.id, "created": created}
+
+
+@router.patch("/{booking_id}/resolve-performance", response_model=schemas.BookingOut)
+def resolve_performance(booking_id: str, db: Session = Depends(get_db)):
+    booking = db.query(models.Booking).filter(models.Booking.id == booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Booking not found")
+    booking.conversation_stage = "post_show"
+    summary = (booking.show_summary or "").strip()
+    marker = "Performance resolved; ready for rebook outreach."
+    if marker not in summary:
+        booking.show_summary = f"{summary}; {marker}" if summary else marker
     db.commit()
     db.refresh(booking)
-    return {"booking_id": booking.id}
+    return booking
 
 
 @router.post("/conversation-message")
 def save_booking_message(data: schemas.BookingMessageCreate, db: Session = Depends(get_db)):
-    msg = models.BookingMessage(**data.model_dump())
+    payload = data.model_dump()
+    payload["subject"] = remove_long_dashes(payload.get("subject"))
+    payload["body"] = remove_long_dashes(payload.get("body"))
+    msg = models.BookingMessage(**payload)
     db.add(msg)
     db.commit()
     db.refresh(msg)

@@ -19,6 +19,14 @@ from sqlalchemy.orm import Session
 
 from backend import models
 from backend.database import get_db
+from backend.services.booking_pipeline import ensure_booking_for_pitch
+from backend.services.pitch_generation import (
+    build_conversation_memory,
+    conversation_completion_status,
+    generate_reply_draft,
+    remove_long_dashes,
+    reply_has_specific_date,
+)
 from backend.websocket_manager import manager
 
 router = APIRouter(prefix="/gmail", tags=["gmail"])
@@ -286,19 +294,26 @@ def _active_account(entertainer_id: str, db: Session) -> Optional[models.GmailAc
     )
 
 
-def _mark_pitch_sent(pitch: models.Pitch, db: Session, message_id: Optional[str] = None, thread_id: Optional[str] = None):
-    pitch.status = "sent"
+def _mark_pitch_sent(
+    pitch: models.Pitch,
+    db: Session,
+    message_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    update_initial_message: bool = True,
+):
+    pitch.status = "booked" if pitch.response_type == "accepted" or pitch.status == "booked" else "sent"
     pitch.sent_at = pitch.sent_at or datetime.utcnow()
     if message_id:
         pitch.gmail_message_id = message_id
     if thread_id:
         pitch.gmail_thread_id = thread_id
     conv = db.query(models.Conversation).filter(models.Conversation.pitch_id == pitch.id).first()
-    if conv:
+    if conv and update_initial_message:
         outbound = (
             db.query(models.ConversationMessage)
             .filter(models.ConversationMessage.conversation_id == conv.id)
             .filter(models.ConversationMessage.direction == "outbound")
+            .filter(models.ConversationMessage.message_type == "initial_pitch")
             .order_by(models.ConversationMessage.created_at.asc())
             .first()
         )
@@ -427,10 +442,64 @@ def _message_body(message: dict) -> str:
     return _clean_reply_body(plain or html_text)
 
 
-def _analysis_for_reply(reply_body: str, venue_name: str) -> dict:
+def _conversation_messages_payload(db: Session, conv: models.Conversation) -> list[dict]:
+    messages = (
+        db.query(models.ConversationMessage)
+        .filter(models.ConversationMessage.conversation_id == conv.id)
+        .order_by(models.ConversationMessage.created_at.asc())
+        .all()
+    )
+    return [
+        {
+            "direction": msg.direction,
+            "body": msg.body,
+            "subject": msg.subject,
+            "created_at": msg.created_at.isoformat() if msg.created_at else "",
+        }
+        for msg in messages
+    ]
+
+
+def _memory_rate_as_float(memory: dict) -> Optional[float]:
+    raw = str(memory.get("agreed_rate") or "").strip()
+    if not raw:
+        return None
+    try:
+        return float(re.sub(r"[^0-9.]", "", raw))
+    except ValueError:
+        return None
+
+
+def _update_booking_from_memory(db: Session, booking: models.Booking, pitch: models.Pitch, memory: dict):
+    agreed_rate = _memory_rate_as_float(memory)
+    if agreed_rate and memory.get("rate_from_thread"):
+        booking.agreed_rate = agreed_rate
+        pitch.negotiated_price = agreed_rate
+    date_mentions = memory.get("date_mentions") or []
+    if date_mentions:
+        booking.show_date = date_mentions[-1]
+    agreements = memory.get("agreements") or []
+    if agreements:
+        booking.show_summary = "; ".join(str(item) for item in agreements)
+    db.commit()
+
+
+def _analysis_for_reply(reply_body: str, venue_name: str, memory: Optional[dict] = None) -> dict:
+    memory = memory or {}
     reply_lower = reply_body.lower()
-    is_positive = any(w in reply_lower for w in [
-        "interested", "love to", "sounds good", "available", "let's", "lets", "book", "works for us",
+    has_specific_date = reply_has_specific_date(reply_body)
+    has_thread_date = bool(memory.get("date_mentions") or has_specific_date)
+    rate_ok = bool(memory.get("rate_is_acceptable"))
+    rate_below = bool(memory.get("rate_is_below_flexible_range"))
+    price_guidance = memory.get("price_guidance") or ""
+    is_success = any(w in reply_lower for w in [
+        "confirmed", "booked", "let's book", "lets book", "let's do it", "lets do it",
+        "we'd like to book", "we would like to book", "we want to book", "move forward",
+        "lock it in", "lock in", "works for us", "sounds good", "deal", "approved",
+        "love to have", "happy to book",
+    ])
+    is_interested = any(w in reply_lower for w in [
+        "interested", "available", "love to learn", "send over", "send the reel", "more info",
     ])
     is_rejected = any(w in reply_lower for w in [
         "not interested", "no thanks", "pass", "decline", "fully booked", "not a fit",
@@ -438,28 +507,46 @@ def _analysis_for_reply(reply_body: str, venue_name: str) -> dict:
     is_budget = any(w in reply_lower for w in ["budget", "rate", "price", "cost", "fee", "$"])
     is_question = "?" in reply_body
 
-    if is_positive:
-        interest = "high"
-        response_type = "accepted"
-        likelihood = 7.5
-        worked = "The pitch created a clear buying signal and the venue is open to next steps."
-        next_action = "Reply with availability, rate confirmation, and 2-3 specific dates or call windows."
-    elif is_rejected:
+    if is_rejected:
         interest = "low"
         response_type = "rejected"
         likelihood = 1.5
         worked = "The outreach reached the right surface area, but this target is not ready right now."
         next_action = "Close this thread politely and schedule a future seasonal re-engagement."
+    elif rate_below:
+        interest = "medium"
+        response_type = "negotiating"
+        likelihood = 5.4
+        worked = "The venue engaged on price, but the counter is below the artist's flexible floor."
+        next_action = f"Counter once using the pricing floor. {price_guidance}".strip()
+    elif is_success or (has_thread_date and rate_ok and not is_question):
+        interest = "high"
+        response_type = "accepted"
+        likelihood = 8.2
+        worked = "The venue gave enough booking signal and the price is within the allowed flexible range."
+        next_action = "Move this into secured deals. Do not keep emailing unless the venue asks a direct blocker question."
+    elif has_thread_date and rate_ok:
+        interest = "high"
+        response_type = "accepted"
+        likelihood = 7.6
+        worked = "The venue supplied a concrete date and the price is inside the acceptable range."
+        next_action = "Send one concise answer only if they asked a direct question, then stop outreach."
     elif is_budget:
         interest = "medium"
         response_type = "negotiating"
         likelihood = 5.8
         worked = "The venue is engaging on logistics or price, which suggests there is real consideration."
-        next_action = "Answer the pricing question directly and offer a simple package or flexible set length."
-    elif is_question:
+        next_action = "Acknowledge the proposed date and answer the pricing question directly." if has_specific_date else "Answer the pricing question directly and offer a simple package or flexible set length."
+    elif has_specific_date:
+        interest = "high"
+        response_type = "maybe"
+        likelihood = 6.8
+        worked = "The venue supplied a concrete date, so the conversation should move to logistics instead of asking for dates again."
+        next_action = "Acknowledge the date and ask only for missing logistics like set time, load-in, set length, and payment details."
+    elif is_interested or is_question:
         interest = "medium"
         response_type = "maybe"
-        likelihood = 5.0
+        likelihood = 6.0 if is_interested else 5.0
         worked = "The reply asks for more context, meaning the pitch earned consideration."
         next_action = "Answer the question, include one proof point, and make the next step easy."
     else:
@@ -474,7 +561,7 @@ def _analysis_for_reply(reply_body: str, venue_name: str) -> dict:
         "response_type": response_type,
         "signals": [
             f"Reply received from {venue_name}",
-            "Positive booking language detected" if is_positive else "Needs follow-up clarification",
+            "Confirmed booking language detected" if response_type == "accepted" else "Specific date detected" if has_specific_date else "Needs follow-up clarification",
         ],
         "what_worked": worked,
         "what_to_do_next": next_action,
@@ -488,7 +575,30 @@ def _analysis_for_reply(reply_body: str, venue_name: str) -> dict:
 
 
 async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch: models.Pitch, reply_body: str):
-    analysis = _analysis_for_reply(reply_body, conv.venue_name or pitch.venue_name or "venue")
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == pitch.entertainer_id).first()
+    entertainer_payload = {
+        "id": entertainer.id,
+        "name": entertainer.name,
+        "type": entertainer.type,
+        "genre": entertainer.genre,
+        "location": entertainer.location,
+        "experience_years": entertainer.experience_years,
+        "social_followers": entertainer.social_followers,
+        "highlights": entertainer.highlights,
+        "current_rate": entertainer.current_rate,
+    } if entertainer else {}
+    memory = build_conversation_memory(
+        _conversation_messages_payload(db, conv),
+        reply_body,
+        {
+            "venue_name": pitch.venue_name,
+            "recipient_email": pitch.recipient_email,
+            "proposed_rate": pitch.proposed_rate,
+        },
+        entertainer_payload,
+    )
+    analysis = _analysis_for_reply(reply_body, conv.venue_name or pitch.venue_name or "venue", memory)
+    completion = conversation_completion_status(memory, analysis, reply_body)
     await _broadcast_event(db, {
         "agent_id": "agent3",
         "event_type": "working",
@@ -509,11 +619,50 @@ async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch:
     conv.interest_level = analysis["interest_level"]
     conv.signals = json.dumps(analysis["signals"])
     conv.what_worked = analysis["what_worked"]
-    conv.what_to_do_next = analysis["what_to_do_next"]
+    conv.what_to_do_next = completion["reason"] if completion.get("stop_outreach") else analysis["what_to_do_next"]
     conv.conversion_likelihood = analysis["conversion_likelihood"]
-    pitch.status = "responded"
+    pitch.status = "rejected" if analysis["response_type"] == "rejected" else "responded"
     pitch.response_type = analysis["response_type"]
     db.commit()
+
+    if analysis["response_type"] == "accepted":
+        booking, created = ensure_booking_for_pitch(db, pitch, conv)
+        _update_booking_from_memory(db, booking, pitch, memory)
+        if completion.get("stop_outreach"):
+            booking.conversation_stage = "confirmed"
+            booking.show_summary = (booking.show_summary or "") + f"; Outreach complete: {completion['reason']}"
+            db.commit()
+        await _broadcast_event(db, {
+            "agent_id": "agent2",
+            "event_type": "deal_secured",
+            "message": f"Accepted reply from {conv.venue_name}; secured deal added to Pipeline.",
+            "entertainer_id": pitch.entertainer_id,
+            "target_id": conv.id,
+            "pitch_id": pitch.id,
+            "booking_id": booking.id,
+            "created": created,
+        })
+        await _broadcast_event(db, {
+            "agent_id": "agent4",
+            "event_type": "booking_secured",
+            "message": f"Pipeline is now tracking secured deal with {conv.venue_name}.",
+            "entertainer_id": pitch.entertainer_id,
+            "target_id": conv.id,
+            "pitch_id": pitch.id,
+            "booking_id": booking.id,
+            "created": created,
+        })
+
+    if completion.get("stop_outreach"):
+        await _broadcast_event(db, {
+            "agent_id": "agent2",
+            "event_type": "outreach_complete",
+            "message": f"Marked {conv.venue_name} done. {completion['reason']}",
+            "entertainer_id": pitch.entertainer_id,
+            "target_id": conv.id,
+            "pitch_id": pitch.id,
+            "response_type": analysis["response_type"],
+        })
 
     await _broadcast_event(db, {
         "agent_id": "agent3",
@@ -525,6 +674,86 @@ async def _analyze_imported_reply(db: Session, conv: models.Conversation, pitch:
         "next_action": analysis["what_to_do_next"],
         "conversion_likelihood": analysis["conversion_likelihood"],
     })
+    analysis["completion"] = completion
+    analysis["memory"] = memory
+    return analysis
+
+
+async def _generate_reply_draft_for_latest_reply(
+    db: Session,
+    conv: models.Conversation,
+    pitch: models.Pitch,
+    latest_reply: str,
+    analysis: dict,
+) -> dict:
+    entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == pitch.entertainer_id).first()
+    if not entertainer:
+        return {"ok": False, "reason": "missing_entertainer"}
+
+    venue = None
+    if pitch.venue_id:
+        venue = db.query(models.Venue).filter(models.Venue.id == pitch.venue_id).first()
+    if not venue and pitch.venue_name:
+        venue = (
+            db.query(models.Venue)
+            .filter(models.Venue.entertainer_id == pitch.entertainer_id)
+            .filter(models.Venue.name == pitch.venue_name)
+            .order_by(models.Venue.created_at.desc())
+            .first()
+        )
+
+    entertainer_payload = {
+        "id": entertainer.id,
+        "name": entertainer.name,
+        "type": entertainer.type,
+        "genre": entertainer.genre,
+        "location": entertainer.location,
+        "experience_years": entertainer.experience_years,
+        "social_followers": entertainer.social_followers,
+        "highlights": entertainer.highlights,
+        "current_rate": entertainer.current_rate,
+    }
+    venue_payload = {
+        "name": (venue.name if venue else None) or conv.venue_name or pitch.venue_name,
+        "contact_name": venue.contact_name if venue else None,
+        "contact_email": (venue.contact_email if venue else None) or pitch.recipient_email,
+        "venue_type": venue.venue_type if venue else None,
+        "contact_approach": venue.contact_approach if venue else pitch.venue_contact_approach,
+        "why_fits": venue.why_fits if venue else None,
+        "specific_examples": venue.specific_examples if venue else None,
+    }
+    pitch_payload = {
+        "id": pitch.id,
+        "venue_name": pitch.venue_name,
+        "recipient_email": pitch.recipient_email,
+        "pitch_subject": pitch.pitch_subject,
+        "pitch_body": pitch.pitch_body,
+        "proposed_rate": pitch.proposed_rate,
+        "response_type": pitch.response_type,
+    }
+    draft = generate_reply_draft(
+        entertainer_payload,
+        venue_payload,
+        pitch_payload,
+        latest_reply,
+        analysis,
+        conversation_messages=_conversation_messages_payload(db, conv),
+    )
+    pitch.pitch_subject = remove_long_dashes(draft["subject"])
+    pitch.pitch_body = remove_long_dashes(draft["body"])
+    pitch.strategy_note = "Auto-generated reply draft from latest Gmail response."
+    db.commit()
+
+    await _broadcast_event(db, {
+        "agent_id": "agent2",
+        "event_type": "pitch_ready",
+        "message": f"Generated reply draft for {conv.venue_name} from latest Gmail response.",
+        "entertainer_id": pitch.entertainer_id,
+        "target_id": conv.id,
+        "pitch_id": pitch.id,
+        "generation_source": draft.get("generation_source"),
+    })
+    return {"ok": True, "generation_source": draft.get("generation_source")}
 
 
 @router.get("/status")
@@ -620,7 +849,10 @@ def send_pitch_with_gmail(pitch_id: str, db: Session = Depends(get_db)):
     pitch = db.query(models.Pitch).filter(models.Pitch.id == pitch_id).first()
     if not pitch:
         raise HTTPException(status_code=404, detail="Pitch not found")
+    return _send_pitch_with_gmail_core(pitch, db)
 
+
+def _send_pitch_with_gmail_core(pitch: models.Pitch, db: Session, service=None, account: Optional[models.GmailAccount] = None):
     dry_run = not _bool_env("GMAIL_LIVE_SENDS", False)
     if dry_run:
         _mark_pitch_sent(pitch, db, message_id="dry-run", thread_id="dry-run")
@@ -629,7 +861,7 @@ def send_pitch_with_gmail(pitch_id: str, db: Session = Depends(get_db)):
     recipient = _resolve_recipient(pitch, db)
     _allow_recipient(recipient)
 
-    account = _active_account(pitch.entertainer_id, db)
+    account = account or _active_account(pitch.entertainer_id, db)
     if not account:
         raise HTTPException(status_code=401, detail="No connected Gmail account. Connect Google first.")
 
@@ -646,13 +878,24 @@ def send_pitch_with_gmail(pitch_id: str, db: Session = Depends(get_db)):
     email["To"] = recipient
     if account.email_address:
         email["From"] = account.email_address
-    email["Subject"] = pitch.pitch_subject or f"Booking inquiry for {pitch.venue_name}"
+    is_thread_reply = bool(
+        pitch.gmail_thread_id
+        and pitch.gmail_thread_id != "dry-run"
+        and (pitch.response_type or pitch.status == "responded")
+    )
+    subject = pitch.pitch_subject or f"Booking inquiry for {pitch.venue_name}"
+    if is_thread_reply and not subject.lower().startswith("re:"):
+        subject = f"Re: {subject}"
+    email["Subject"] = subject
     email.set_content(pitch.pitch_body or "")
 
     raw = base64.urlsafe_b64encode(email.as_bytes()).decode()
-    service = build("gmail", "v1", credentials=_account_credentials(account, db))
+    service = service or build("gmail", "v1", credentials=_account_credentials(account, db))
+    send_body = {"raw": raw}
+    if is_thread_reply:
+        send_body["threadId"] = pitch.gmail_thread_id
     try:
-        sent = service.users().messages().send(userId="me", body={"raw": raw}).execute()
+        sent = service.users().messages().send(userId="me", body=send_body).execute()
     except HttpError as exc:
         raise HTTPException(
             status_code=getattr(getattr(exc, "resp", None), "status", 502) or 502,
@@ -661,7 +904,26 @@ def send_pitch_with_gmail(pitch_id: str, db: Session = Depends(get_db)):
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Gmail send failed: {exc}") from exc
 
-    _mark_pitch_sent(pitch, db, message_id=sent.get("id"), thread_id=sent.get("threadId"))
+    if is_thread_reply:
+        conv = _conversation_for_pitch(pitch, db)
+        db.add(models.ConversationMessage(
+            conversation_id=conv.id,
+            direction="outbound",
+            message_type="gmail_reply_sent",
+            subject=subject,
+            body=pitch.pitch_body or "",
+            gmail_message_id=sent.get("id"),
+            gmail_thread_id=sent.get("threadId") or pitch.gmail_thread_id,
+        ))
+        db.commit()
+
+    _mark_pitch_sent(
+        pitch,
+        db,
+        message_id=sent.get("id"),
+        thread_id=sent.get("threadId"),
+        update_initial_message=not is_thread_reply,
+    )
     return {
         "ok": True,
         "dry_run": False,
@@ -702,6 +964,8 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
     threads_checked = 0
     replies_imported = 0
     skipped_no_thread = 0
+    reply_drafts_generated = 0
+    auto_replies_sent = 0
     analyzed_targets: set[str] = set()
 
     await _broadcast_event(db, {
@@ -732,7 +996,8 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
             continue
 
         conv = _conversation_for_pitch(pitch, db)
-        for message in thread.get("messages") or []:
+        thread_messages = sorted(thread.get("messages") or [], key=_message_datetime)
+        for message in thread_messages:
             message_id = message.get("id")
             if not message_id or message_id == pitch.gmail_message_id:
                 continue
@@ -765,7 +1030,37 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
             db.commit()
             replies_imported += 1
             analyzed_targets.add(conv.id)
-            await _analyze_imported_reply(db, conv, pitch, body)
+            analysis = await _analyze_imported_reply(db, conv, pitch, body)
+            completion = analysis.get("completion") or {}
+            if completion.get("stop_outreach"):
+                continue
+            draft_result = await _generate_reply_draft_for_latest_reply(db, conv, pitch, body, analysis)
+            if draft_result.get("ok"):
+                reply_drafts_generated += 1
+                entertainer = db.query(models.Entertainer).filter(models.Entertainer.id == pitch.entertainer_id).first()
+                if entertainer and entertainer.outreach_mode == "auto_pitch":
+                    try:
+                        sent_result = _send_pitch_with_gmail_core(pitch, db, service=service, account=account)
+                        auto_replies_sent += 0 if sent_result.get("dry_run") else 1
+                        await _broadcast_event(db, {
+                            "agent_id": "agent2",
+                            "event_type": "gmail_auto_sent",
+                            "message": f"Auto-sent Gmail reply to {conv.venue_name}.",
+                            "entertainer_id": pitch.entertainer_id,
+                            "target_id": conv.id,
+                            "pitch_id": pitch.id,
+                            "message_id": sent_result.get("message_id"),
+                            "thread_id": sent_result.get("thread_id"),
+                        })
+                    except Exception as exc:
+                        await _broadcast_event(db, {
+                            "agent_id": "agent2",
+                            "event_type": "error",
+                            "message": f"Could not auto-send Gmail reply to {conv.venue_name}: {exc}",
+                            "entertainer_id": pitch.entertainer_id,
+                            "target_id": conv.id,
+                            "pitch_id": pitch.id,
+                        })
 
     account.last_sync_at = datetime.utcnow()
     db.commit()
@@ -773,16 +1068,20 @@ async def sync_gmail_replies(entertainer_id: str, db: Session = Depends(get_db))
     await _broadcast_event(db, {
         "agent_id": "agent3",
         "event_type": "complete",
-        "message": f"Gmail sync imported {replies_imported} new replies across {threads_checked} threads.",
+        "message": f"Gmail sync imported {replies_imported} replies, generated {reply_drafts_generated} drafts, and auto-sent {auto_replies_sent}.",
         "entertainer_id": entertainer_id,
         "threads_checked": threads_checked,
         "replies_imported": replies_imported,
+        "reply_drafts_generated": reply_drafts_generated,
+        "auto_replies_sent": auto_replies_sent,
     })
 
     return {
         "ok": True,
         "threads_checked": threads_checked,
         "replies_imported": replies_imported,
+        "reply_drafts_generated": reply_drafts_generated,
+        "auto_replies_sent": auto_replies_sent,
         "analyzed_conversations": len(analyzed_targets),
         "skipped_no_thread": skipped_no_thread,
         "last_sync_at": account.last_sync_at.isoformat() if account.last_sync_at else None,

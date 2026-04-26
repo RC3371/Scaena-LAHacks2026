@@ -45,15 +45,15 @@ def config_health_lines(component: str = "app") -> list[str]:
     lines.append(_line("[OK]" if _is_configured("AGENTVERSE_API_KEY") else "[WARN]", "AGENTVERSE_API_KEY", "set" if _is_configured("AGENTVERSE_API_KEY") else "missing, Agentverse registration disabled"))
 
     gemini = _is_configured("GEMINI_API_KEY") or _is_configured("GOOGLE_API_KEY")
-    google_search_key = _is_configured("GOOGLE_SEARCH_API_KEY")
-    google_search_cx = _is_configured("GOOGLE_SEARCH_ENGINE_ID")
-    eventbrite = _is_configured("EVENTBRITE_API_TOKEN")
+    google_search_key = _is_configured("GOOGLE_SEARCH_API_KEY") or _is_configured("GOOGLE_API_KEY") or _is_configured("GEMINI_API_KEY")
+    google_search_cx = _is_configured("GOOGLE_SEARCH_ENGINE_ID") or _is_configured("GOOGLE_CSE_ID") or _is_configured("GOOGLE_CUSTOM_SEARCH_CX")
+    eventbrite = _is_configured("EVENTBRITE_API_TOKEN") or _is_configured("EVENTBRITE_API_KEY")
     live_research = gemini or (google_search_key and google_search_cx) or eventbrite
 
     lines.append(_line("[OK]" if live_research else "[WARN]", "Live market research", "at least one live source configured" if live_research else "no live source keys, falls back to generated research"))
     lines.append(_line("[OK]" if gemini else "[INFO]", "Gemini grounding", "enabled" if gemini else "not configured"))
     if google_search_key != google_search_cx:
-        lines.append(_line("[WARN]", "Google Programmable Search", "partial config, set both GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID"))
+        lines.append(_line("[WARN]", "Google Programmable Search", "partial config, set GOOGLE_SEARCH_ENGINE_ID and either GOOGLE_SEARCH_API_KEY or GOOGLE_API_KEY"))
     else:
         lines.append(_line("[OK]" if google_search_key else "[INFO]", "Google Programmable Search", "enabled" if google_search_key else "not configured"))
     lines.append(_line("[OK]" if eventbrite else "[INFO]", "Eventbrite API", "enabled" if eventbrite else "optional, not configured"))

@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { RefreshCw, FileText, Send, Check, Calendar, DollarSign } from "lucide-react";
 import { client } from "../api/client";
+import { CollapsibleText } from "../components/CollapsibleText";
 
 type LogItem = {
   id: string;
@@ -25,9 +26,7 @@ export function Pipeline() {
   const [pendingFollowups, setPendingFollowups] = useState<any[]>([]);
   const [sendingFollowup, setSendingFollowup] = useState<string | null>(null);
   const [entertainerId, setEntertainerId] = useState("");
-  const [entertainerName, setEntertainerName] = useState("the artist");
-  const [entertainerType, setEntertainerType] = useState("performer");
-  const [entertainerRate, setEntertainerRate] = useState(350);
+  const [resolvingDealId, setResolvingDealId] = useState<string | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -35,9 +34,6 @@ export function Pipeline() {
       if (!entertainers.length) return;
       const ent = entertainers[0];
       setEntertainerId(ent.id);
-      setEntertainerName(ent.name || "the artist");
-      setEntertainerType(ent.type || "performer");
-      setEntertainerRate(ent.current_rate || 350);
       const [active, followups] = await Promise.all([
         client.bookings.active(),
         client.outreach.pendingFollowups(),
@@ -91,6 +87,8 @@ export function Pipeline() {
     })),
   ].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))) : [];
 
+  const allRebookTargets = rebookTargets;
+
   const toggleRebook = (id: string) => {
     setSelectedRebooks((prev) => {
       const next = new Set(prev);
@@ -106,15 +104,10 @@ export function Pipeline() {
     const initiated = new Set<string>();
 
     await Promise.all(targets.map(async (target) => {
-      const venueName = target.venue_name;
       try {
-        await client.outreach.createPitch({
+        await client.outreach.createRebookPitch({
           entertainer_id: entertainerId,
-          venue_name: venueName,
-          entertainer_type: entertainerType,
-          pitch_subject: `Rebook request - ${entertainerName} at ${venueName}`,
-          pitch_body: `Hi ${venueName} team,\n\nThanks again for having ${entertainerName}. The last show was a strong fit, and ${entertainerName} is lining up more dates in the current target range.\n\nWould you be open to bringing ${entertainerName} back for another high-energy set? We can send recent material, a short reel, and a few available dates.\n\n${entertainerName}`,
-          proposed_rate: entertainerRate,
+          booking_id: target.id,
           status: "draft",
         });
         initiated.add(target.id);
@@ -122,6 +115,7 @@ export function Pipeline() {
     }));
 
     setRebookedIds((prev) => new Set([...prev, ...initiated]));
+    setRebookTargets((prev) => prev.filter((target) => !initiated.has(target.id)));
     setSelectedRebooks(new Set());
     setInitiatingRebook(false);
   };
@@ -141,11 +135,35 @@ export function Pipeline() {
     setMessages((prev) => ({ ...prev, [bookingId]: updated }));
   };
 
-  const allRebookTargets = rebookTargets.length ? rebookTargets : [
-    { id: "demo-roxy", venue_name: "The Roxy Theatre", rebook_note: "Previous opening set had strong crowd response. Good fit for a follow-up hip-hop showcase slot." },
-    { id: "demo-bardot", venue_name: "Bardot Hollywood", rebook_note: "Weekend crowd matched the artist's audience. Rebook in the target range and push with social promo." },
-    { id: "demo-ucla", venue_name: "UCLA Campus Events", rebook_note: "Campus audience is a clean path toward the artist's exposure target." },
-  ];
+  const handleResolvePerformance = async (booking: any) => {
+    if (!booking?.id || resolvingDealId === booking.id) return;
+    setResolvingDealId(booking.id);
+    try {
+      const resolved = await client.bookings.resolvePerformance(booking.id);
+      setBookings((prev) => {
+        const next = prev.filter((item) => item.id !== booking.id);
+        if (selectedDealId === booking.id) setSelectedDealId(next[0]?.id || null);
+        return next;
+      });
+      setMessages((prev) => {
+        const next = { ...prev };
+        delete next[booking.id];
+        return next;
+      });
+      setConversationMessages((prev) => {
+        const next = { ...prev };
+        delete next[booking.id];
+        return next;
+      });
+      setRebookTargets((prev) => (
+        prev.some((item) => item.id === resolved.id) ? prev : [resolved, ...prev]
+      ));
+    } catch {
+      window.alert("Could not move this deal to the rebook engine yet.");
+    } finally {
+      setResolvingDealId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col h-full overflow-hidden pr-1 pb-1">
@@ -168,31 +186,65 @@ export function Pipeline() {
           </h2>
           <div className="space-y-2">
             {bookings.map((booking) => (
-              <button
-                key={booking.id}
-                onClick={() => setSelectedDealId(booking.id)}
-                className={`w-full text-left px-3 py-2.5 rounded-xl border-4 transition-all ${
-                  selectedDeal?.id === booking.id
-                    ? "bg-[var(--color-neon-yellow)] text-black border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] -translate-y-0.5"
-                    : "bg-black text-white border-black hover:border-[var(--color-neon-yellow)]"
-                }`}
-              >
-                <div className="flex justify-between gap-3">
-                  <p className="text-[13px] font-bold leading-tight">{booking.venue_name}</p>
-                  <FileText size={14} className="shrink-0 mt-0.5" strokeWidth={3} />
+              <div key={booking.id} className="relative overflow-hidden rounded-xl">
+                <div className="absolute inset-0 bg-[var(--color-neon-green)] border-4 border-black rounded-xl flex items-center justify-end pr-4 text-black font-[var(--font-bungee)] text-[11px]">
+                  READY TO REBOOK
                 </div>
-                <div className="mt-2 grid grid-cols-2 gap-2 font-[var(--font-space)]">
-                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase">
-                    <DollarSign size={11} strokeWidth={3} /> {booking.agreed_rate ? `${booking.agreed_rate}` : "TBD"}
-                  </span>
-                  <span className="flex items-center gap-1 text-[10px] font-bold uppercase justify-end">
-                    <Calendar size={11} strokeWidth={3} /> {booking.show_date || "DATE TBD"}
-                  </span>
-                </div>
-                <span className={`mt-2 inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase font-[var(--font-space)] ${selectedDeal?.id === booking.id ? "bg-black text-[var(--color-neon-yellow)]" : "bg-zinc-800 text-zinc-400"}`}>
-                  {(booking.conversation_stage || "confirmed").replace(/_/g, " ")}
-                </span>
-              </button>
+                <motion.div
+                  drag="x"
+                  dragConstraints={{ left: -105, right: 0 }}
+                  dragElastic={0.08}
+                  dragSnapToOrigin
+                  onDragEnd={(_, info) => {
+                    if (info.offset.x < -82 || info.velocity.x < -520) handleResolvePerformance(booking);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedDealId(booking.id)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") setSelectedDealId(booking.id);
+                  }}
+                  className={`relative w-full text-left px-3 py-2.5 rounded-xl border-4 transition-all cursor-pointer ${
+                    selectedDeal?.id === booking.id
+                      ? "bg-[var(--color-neon-yellow)] text-black border-black shadow-[3px_3px_0px_0px_rgba(0,0,0,1)] -translate-y-0.5"
+                      : "bg-black text-white border-black hover:border-[var(--color-neon-yellow)]"
+                  } ${resolvingDealId === booking.id ? "opacity-60 pointer-events-none" : ""}`}
+                >
+                  <div className="flex justify-between gap-3">
+                    <p className="text-[13px] font-bold leading-tight">{booking.venue_name}</p>
+                    <FileText size={14} className="shrink-0 mt-0.5" strokeWidth={3} />
+                  </div>
+                  <div className="mt-2 grid grid-cols-2 gap-2 font-[var(--font-space)]">
+                    <span className="flex items-center gap-1 text-[10px] font-bold uppercase">
+                      <DollarSign size={11} strokeWidth={3} /> {booking.agreed_rate ? `${booking.agreed_rate}` : "TBD"}
+                    </span>
+                    <span className="flex items-center gap-1 text-[10px] font-bold uppercase justify-end">
+                      <Calendar size={11} strokeWidth={3} /> {booking.show_date || "DATE TBD"}
+                    </span>
+                  </div>
+                  <div className="mt-2 flex items-center justify-between gap-2">
+                    <span className={`inline-block text-[10px] font-bold px-2 py-0.5 rounded-full uppercase font-[var(--font-space)] ${selectedDeal?.id === booking.id ? "bg-black text-[var(--color-neon-yellow)]" : "bg-zinc-800 text-zinc-400"}`}>
+                      {(booking.conversation_stage || "confirmed").replace(/_/g, " ")}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        handleResolvePerformance(booking);
+                      }}
+                      disabled={resolvingDealId === booking.id}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-lg border-2 border-black text-[10px] font-bold font-[var(--font-space)] uppercase ${
+                        selectedDeal?.id === booking.id
+                          ? "bg-white text-black"
+                          : "bg-[var(--color-neon-yellow)] text-black"
+                      } disabled:opacity-50`}
+                    >
+                      <Check size={10} strokeWidth={3} />
+                      {resolvingDealId === booking.id ? "MOVING" : "RESOLVE"}
+                    </button>
+                  </div>
+                </motion.div>
+              </div>
             ))}
             {bookings.length === 0 && (
               <p className="text-zinc-600 text-[12px] font-[var(--font-space)] uppercase p-2">NO SECURED DEALS YET.</p>
@@ -247,7 +299,11 @@ export function Pipeline() {
                         <span className="text-[11px] font-bold text-zinc-400 font-[var(--font-space)] uppercase">{String(item.status).replace(/_/g, " ")}</span>
                       )}
                     </div>
-                    <p className="text-[16px] font-medium text-zinc-100 leading-[1.75] whitespace-pre-wrap">{item.body}</p>
+                    <CollapsibleText
+                      text={item.body}
+                      textClassName="text-[16px] font-medium text-zinc-100 leading-[1.75] whitespace-pre-wrap"
+                      buttonClassName="bg-[var(--color-neon-yellow)] text-black"
+                    />
                     {item.id.startsWith("booking-") && item.status === "draft" && item.bookingId && (
                       <button
                         onClick={() => handleMarkBookingMsgSent(item.id.replace("booking-", ""), item.bookingId!)}
@@ -268,7 +324,7 @@ export function Pipeline() {
             </div>
           </section>
 
-          <section className="bg-[var(--color-panel-bg)] border-4 border-black rounded-2xl p-3 shadow-[3px_3px_0px_0px_var(--color-neon-yellow)] shrink-0 max-h-[235px] overflow-y-auto">
+          <section className="bg-[var(--color-panel-bg)] border-4 border-black rounded-2xl p-3 shadow-[3px_3px_0px_0px_var(--color-neon-yellow)] shrink-0 max-h-[190px] overflow-y-auto">
             <div className="flex flex-wrap justify-between items-center gap-3 border-b-4 border-black pb-2 mb-3">
               <h2 className="text-[13px] font-[var(--font-bungee)] text-[var(--color-neon-yellow)] flex items-center gap-2">
                 <RefreshCw size={16} strokeWidth={3} /> REBOOK ENGINE
@@ -288,19 +344,27 @@ export function Pipeline() {
                 </AnimatePresence>
               )}
             </div>
+            {allRebookTargets.length === 0 ? (
+              <div className="bg-black border-2 border-[var(--color-neon-yellow)]/40 rounded-xl p-4">
+                <p className="text-[12px] text-zinc-400 font-[var(--font-space)] uppercase leading-relaxed">
+                  NO COMPLETED DEALS READY FOR REBOOK YET. COMPLETED BOOKINGS WILL APPEAR HERE.
+                </p>
+              </div>
+            ) : (
             <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-3">
               {allRebookTargets.map((target: any) => (
                 <RebookCard
                   key={target.id}
                   id={target.id}
                   venueName={target.venue_name}
-                  note={target.rebook_note || "Previous show completed. Rebook opportunity available."}
+                  note={target.rebook_note || "Completed show is ready for a rebook outreach draft."}
                   selected={selectedRebooks.has(target.id)}
                   rebooked={rebookedIds.has(target.id)}
                   onToggle={toggleRebook}
                 />
               ))}
             </div>
+            )}
           </section>
         </div>
       </div>

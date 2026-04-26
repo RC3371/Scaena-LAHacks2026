@@ -12,10 +12,12 @@ EVENTBRITE_SEARCH_URL = "https://www.eventbriteapi.com/v3/events/search/"
 
 
 def live_sources_configured() -> bool:
+    google_key, google_cx = _google_config()
     return bool(
         _gemini_key()
-        or (os.getenv("GOOGLE_SEARCH_API_KEY") and os.getenv("GOOGLE_SEARCH_ENGINE_ID"))
+        or (google_key and google_cx)
         or os.getenv("EVENTBRITE_API_TOKEN")
+        or os.getenv("EVENTBRITE_API_KEY")
     )
 
 
@@ -208,7 +210,17 @@ def _parse_json_object(text: str) -> dict | None:
 
 
 def _google_config() -> tuple[str | None, str | None]:
-    return os.getenv("GOOGLE_SEARCH_API_KEY"), os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+    api_key = (
+        os.getenv("GOOGLE_SEARCH_API_KEY")
+        or os.getenv("GOOGLE_API_KEY")
+        or os.getenv("GEMINI_API_KEY")
+    )
+    cx = (
+        os.getenv("GOOGLE_SEARCH_ENGINE_ID")
+        or os.getenv("GOOGLE_CSE_ID")
+        or os.getenv("GOOGLE_CUSTOM_SEARCH_CX")
+    )
+    return api_key, cx
 
 
 def _google_search(query: str, source: str, venue_type: str, num: int = 5) -> list[dict]:
@@ -279,7 +291,7 @@ def _google_social_results(query_seed: str, location: str, etype: str, genre: st
 
 
 def _eventbrite_events(query_seed: str, location: str, etype: str) -> list[dict]:
-    token = os.getenv("EVENTBRITE_API_TOKEN")
+    token = os.getenv("EVENTBRITE_API_TOKEN") or os.getenv("EVENTBRITE_API_KEY")
     if not token:
         return []
 
@@ -347,7 +359,7 @@ def _normalize_key(value: str) -> str:
 
 def _clean_title(title: str) -> str:
     title = _clean_text(title)
-    for sep in [" | ", " - ", " – "]:
+    for sep in [" | ", " - ", " \u2013 "]:
         if sep in title:
             title = title.split(sep)[0].strip()
     return title[:90] or "Venue lead"

@@ -8,13 +8,11 @@ import type { Venue } from "../types";
 
 export function MarketInsights() {
   const [isScanning, setIsScanning] = useState(false);
-  const [autoMode, setAutoMode] = useState(false);
+  const [autoMode, setAutoMode] = useState(true);
   const [logs, setLogs] = useState<string[]>([]);
   const [venues, setVenues] = useState<Venue[]>([]);
   const [input, setInput] = useState("");
   const [entertainerId, setEntertainerId] = useState("");
-  const [entertainerRate, setEntertainerRate] = useState(0);
-  const [entertainerType, setEntertainerType] = useState("");
   const [summary, setSummary] = useState<any>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [sentToOutreach, setSentToOutreach] = useState<Set<string>>(new Set());
@@ -27,8 +25,7 @@ export function MarketInsights() {
       if (!entertainers.length) return;
       const ent = entertainers[0];
       setEntertainerId(ent.id);
-      setEntertainerRate(ent.current_rate || 350);
-      setEntertainerType(ent.type || "performer");
+      setAutoMode(ent.outreach_mode !== "manual_approve");
       const [venueData, summaryData] = await Promise.all([
         client.venues.list(ent.id),
         client.analytics.summary(ent.id),
@@ -82,21 +79,26 @@ export function MarketInsights() {
     if (!entertainerId || sendingId) return;
     setSendingId(venue.id);
     try {
-      await client.outreach.createPitch({
+      const generated = await client.outreach.generatePitch({
         entertainer_id: entertainerId,
-        venue_name: venue.name,
-        entertainer_type: entertainerType,
+        venue_id: venue.id,
         recipient_email: venue.contact_email || undefined,
-        pitch_subject: `Performance Inquiry — ${venue.name}`,
-        pitch_body: `Hi,\n\nI came across ${venue.name} and believe my ${entertainerType} act would be a great fit for your audience. ${venue.why_fits || ""}\n\nI'm available for bookings and my rate starts at $${entertainerRate}/show.\n\nWould love to connect.\n\nBest,`,
-        proposed_rate: entertainerRate,
         venue_contact_approach: venue.contact_approach || undefined,
-        status: autoMode ? "sent" : "draft",
+        status: "draft",
       });
+      if (autoMode && generated.pitch_id) {
+        await client.gmail.sendPitch(generated.pitch_id);
+      }
       setSentToOutreach((prev) => new Set([...prev, venue.id]));
-      setLogs((prev) => [`> QUEUED :: ${venue.name.toUpperCase()} → AGENT 2`, ...prev]);
-    } catch {
-      setLogs((prev) => ["> ERROR :: COULD NOT QUEUE PITCH", ...prev]);
+      setLogs((prev) => [
+        autoMode
+          ? `> AUTO SENT :: ${venue.name.toUpperCase()} -> GMAIL`
+          : `> GENERATED ${String(generated.generation_source || "DRAFT").toUpperCase()} PITCH :: ${venue.name.toUpperCase()}`,
+        ...prev,
+      ]);
+    } catch (error) {
+      console.error(error);
+      setLogs((prev) => ["> ERROR :: COULD NOT GENERATE OR SEND PITCH", ...prev]);
     }
     setSendingId(null);
   };

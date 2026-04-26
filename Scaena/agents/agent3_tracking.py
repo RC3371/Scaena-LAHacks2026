@@ -64,7 +64,7 @@ def _mock_conversation_analysis(reply_body: str, venue_name: str) -> dict:
     elif is_negative:
         interest = "low"
         likelihood = 1.5
-        worked = "Made it through to a response — venue at least engaged with the pitch."
+        worked = "Made it through to a response, venue at least engaged with the pitch."
         next_action = "Log as declined. Re-engage in 3 months with a seasonal hook."
     elif is_question:
         interest = "medium"
@@ -74,7 +74,7 @@ def _mock_conversation_analysis(reply_body: str, venue_name: str) -> dict:
     else:
         interest = "medium"
         likelihood = 4.0
-        worked = "Pitch generated a response — tone was non-threatening enough to get a reply."
+        worked = "Pitch generated a response, tone was non-threatening enough to get a reply."
         next_action = "Follow up with a value-add: performance reel or recent press mention."
 
     return {
@@ -108,7 +108,7 @@ def _mock_insights(summary: dict, entertainer_id: str) -> dict:
         "optimal_price": avg_rate * 1.1,
         "insights_narrative": (
             f"Response rate is {rate*100:.1f}%. "
-            f"{'Strong performance — maintain current strategy.' if rate > 0.4 else 'Below target — shift pitch angle and venue mix.'} "
+            f"{'Strong performance, maintain current strategy.' if rate > 0.4 else 'Below target, shift pitch angle and venue mix.'} "
             f"{'Best venues: ' + ', '.join(best_venues) + '.' if best_venues else ''}"
         ),
         "thinking_steps": [

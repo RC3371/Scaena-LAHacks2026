@@ -34,6 +34,28 @@ export const client = {
       venue_contact_approach?: string;
       status?: string;
     }) => (await api.post("/outreach/pitch", payload)).data,
+    generatePitch: async (payload: {
+      entertainer_id: string;
+      venue_id?: string;
+      venue_name?: string;
+      venue_type?: string;
+      recipient_email?: string;
+      venue_contact_approach?: string;
+      why_fits?: string;
+      source_url?: string;
+      specific_examples?: string;
+      proposed_rate?: number;
+      status?: string;
+    }) => (await api.post("/outreach/pitch/generated", payload)).data,
+    createRebookPitch: async (payload: {
+      entertainer_id: string;
+      booking_id: string;
+      status?: string;
+    }) => (await api.post("/outreach/pitch/rebook", payload)).data,
+    regeneratePitch: async (pitchId: string, payload: {
+      entertainer_id?: string;
+      strategy_instruction?: string;
+    }) => (await api.post(`/outreach/pitch/${pitchId}/regenerate`, payload)).data,
     strategyUpdate: async (payload: {
       entertainer_id: string;
       target_id: string;
@@ -63,6 +85,8 @@ export const client = {
   bookings: {
     active: async () => (await api.get("/bookings/active")).data,
     completedUnrebooked: async () => (await api.get("/bookings/completed-unrebooked")).data,
+    resolvePerformance: async (bookingId: string) =>
+      (await api.patch(`/bookings/${bookingId}/resolve-performance`)).data,
     messages: async (bookingId: string) => (await api.get(`/bookings/messages/${bookingId}`)).data,
     markBookingMessageSent: async (messageId: string) =>
       (await api.patch(`/bookings/conversation-message/${messageId}`)).data,

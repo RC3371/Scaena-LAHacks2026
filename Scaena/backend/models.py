@@ -22,7 +22,7 @@ class Entertainer(Base):
     highlights = Column(Text)
     links = Column(Text)
     current_rate = Column(Float)
-    outreach_mode = Column(String, default="manual_approve")
+    outreach_mode = Column(String, default="auto_pitch")
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 

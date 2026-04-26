@@ -11,18 +11,27 @@ export function Layout() {
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (!localStorage.getItem("scaena_onboarded")) {
-      navigate("/onboarding");
-    }
-  }, [navigate]);
-
-  useEffect(() => {
     client.entertainers.active()
       .then((entertainers) => {
-        if (entertainers[0]?.name) setUserName(entertainers[0].name.toUpperCase());
+        const active = entertainers[0];
+        if (active?.name) setUserName(active.name.toUpperCase());
+        const onboarded = localStorage.getItem("scaena_onboarded") === "true";
+        const savedProfileId = localStorage.getItem("scaena_onboarded_profile_id");
+        const savedProfileCreatedAt = localStorage.getItem("scaena_onboarded_profile_created_at");
+        const profileMatches = Boolean(
+          active
+          && savedProfileId === active.id
+          && savedProfileCreatedAt === active.created_at
+        );
+        if (!onboarded || !profileMatches) {
+          localStorage.removeItem("scaena_onboarded");
+          navigate("/onboarding");
+        }
       })
-      .catch(() => {});
-  }, []);
+      .catch(() => {
+        if (!localStorage.getItem("scaena_onboarded")) navigate("/onboarding");
+      });
+  }, [navigate]);
 
   const navItems = [
     { name: "DASHBOARD", href: "/", icon: Home, color: "var(--color-neon-purple)" },

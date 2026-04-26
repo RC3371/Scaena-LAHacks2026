@@ -4,6 +4,7 @@ import httpx
 from datetime import datetime
 from agents.agent_runtime import Agent, Context
 from agents.shared_models import FollowUpEngagement, BookingConversationUpdate, AGENT3_ADDRESS
+from backend.services.pitch_generation import ensure_team_signoff, remove_long_dashes, team_name_for
 
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
 _api_key = os.getenv("ASI1_API_KEY", "").strip()
@@ -26,31 +27,31 @@ except Exception:
 
 _MOCK_FOLLOWUPS = {
     1: {
-        "subject": "Quick follow-up — {name} performance inquiry",
-        "body": "Hi,\n\nJust following up on my last note about performing at {venue}.\n\nI recently put together a performance reel — happy to send it over if that helps with the decision.\n\nStill interested and flexible on dates.\n\n— {name}",
+        "subject": "Quick follow-up for {name} performance inquiry",
+        "body": "Hi,\n\nJust following up on our last note about {name} performing at {venue}.\n\nWe recently put together a performance reel. Happy to send it over if that helps with the decision.\n\nStill interested and flexible on dates.\n\nSincerely,\n{team}",
     },
     2: {
-        "subject": "Re: {name} — recent show highlights",
-        "body": "Hi,\n\nWanted to check back in. Since my last message, I had a strong run of shows including a sold-out set last weekend — audience response was excellent.\n\nWould love to bring that energy to {venue}. Open to a trial booking if that works better.\n\n— {name}",
+        "subject": "Re: {name} recent show highlights",
+        "body": "Hi,\n\nWanted to check back in. Since our last message, {name} had a strong run of shows including a sold-out set last weekend, and audience response was excellent.\n\nWe would love to bring that energy to {venue}. Open to a trial booking if that works better.\n\nSincerely,\n{team}",
     },
     3: {
-        "subject": "Final check-in — {name} availability closing up",
-        "body": "Hi,\n\nLast note — my availability for next month is filling up and I wanted to give {venue} first right of refusal before I commit elsewhere.\n\nNo pressure either way, but happy to hop on a quick call if helpful.\n\n— {name}",
+        "subject": "Final check-in for {name} availability",
+        "body": "Hi,\n\nLast note. {name}'s availability for next month is filling up and we wanted to give {venue} first right of refusal before we commit elsewhere.\n\nNo pressure either way, but happy to hop on a quick call if helpful.\n\nSincerely,\n{team}",
     },
 }
 
 _MOCK_BOOKING_MSGS = {
     "confirmed": {
-        "subject": "Confirmed — logistics for {name} at {venue}",
-        "body": "Hi,\n\nGreat news — excited to confirm the booking! A few quick logistics questions:\n\n• What time should I arrive for load-in/sound check?\n• Preferred payment method (Venmo, check, or invoice)?\n• Any specific set length or content guidelines?\n\nLooking forward to it!\n\n— {name}",
+        "subject": "Confirmed logistics for {name} at {venue}",
+        "body": "Hi,\n\nGreat news, excited to confirm the booking for {name}! A few quick logistics questions:\n\n• What time should he arrive for load-in/sound check?\n• Preferred payment method (Venmo, check, or invoice)?\n• Any specific set length or content guidelines?\n\nLooking forward to it!\n\nSincerely,\n{team}",
     },
     "pre_show": {
-        "subject": "Quick check-in — see you soon, {venue}!",
-        "body": "Hi,\n\nJust checking in ahead of the show — everything on my end is confirmed and I'm looking forward to it.\n\nLet me know if anything has changed or if there's anything I should know before arriving.\n\n— {name}",
+        "subject": "Quick check-in before {venue}",
+        "body": "Hi,\n\nJust checking in ahead of the show. Everything on our end is confirmed and {name} is looking forward to it.\n\nLet us know if anything has changed or if there is anything he should know before arriving.\n\nSincerely,\n{team}",
     },
     "post_show": {
         "subject": "Thanks, {venue}! Great show",
-        "body": "Hi,\n\nJust wanted to say thank you — last night was a blast. The crowd was amazing and I think we made a great match.\n\nI'd love to come back for another show whenever your schedule allows. Worth keeping me in mind for future bookings?\n\nThanks again,\n{name}",
+        "body": "Hi,\n\nJust wanted to say thank you. Last night was a blast, and {name} had a great time with the crowd.\n\nWe would love to bring him back for another show whenever your schedule allows. Worth keeping him in mind for future bookings?\n\nSincerely,\n{team}",
     },
 }
 
@@ -63,6 +64,21 @@ def broadcast(event_type: str, message: str, entertainer_id: str, **extra):
         }, timeout=5)
     except Exception:
         pass
+
+
+def _normalize_message(message: dict, name: str) -> dict:
+    return {
+        **message,
+        "subject": remove_long_dashes(message.get("subject")),
+        "body": ensure_team_signoff(remove_long_dashes(message.get("body")), name),
+    }
+
+
+def _format_template(template: dict, name: str, venue: str) -> dict:
+    return {
+        "subject": template["subject"].format(name=name, venue=venue, team=team_name_for(name)),
+        "body": template["body"].format(name=name, venue=venue, team=team_name_for(name)),
+    }
 
 
 def _get_entertainer_name(entertainer_id: str) -> str:
@@ -135,17 +151,14 @@ async def handle_followup(ctx: Context, pitch: dict):
 
     if _simulation_mode:
         template = _MOCK_FOLLOWUPS[followup_number]
-        followup = {
-            "subject": template["subject"].format(name=name, venue=venue),
-            "body": template["body"].format(name=name, venue=venue),
-        }
+        followup = _format_template(template, name, venue)
     else:
         instructions = {
             1: "Follow-up #1. Brief, offer to send a performance reel. Under 70 words.",
-            2: "Follow-up #2. Add social proof — recent show success. Under 70 words.",
-            3: "Follow-up #3 — final. Gentle urgency. Under 60 words.",
+            2: "Follow-up #2. Add social proof, recent show success. Under 70 words.",
+            3: "Follow-up #3, final. Gentle urgency. Under 60 words.",
         }
-        prompt = f"Generate follow-up #{followup_number} for {pitch['entertainer_type']} pitching {venue}.\nOriginal subject: {pitch['pitch_subject']}\n{instructions[followup_number]}\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
+        prompt = f"Generate follow-up #{followup_number} for {pitch['entertainer_type']} pitching {venue}.\nArtist: {name}\nWrite from {team_name_for(name)}'s perspective using we/our team, not from the artist personally.\nSign off exactly with: Sincerely, then {team_name_for(name)} on the next line.\nOriginal subject: {pitch['pitch_subject']}\n{instructions[followup_number]}\nDo not use em dashes or en dashes.\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
         try:
             resp_llm = _llm.chat.completions.create(
                 model=os.getenv("ASI1_MODEL", "asi1-mini"),
@@ -157,10 +170,9 @@ async def handle_followup(ctx: Context, pitch: dict):
         except Exception as e:
             ctx.logger.error(f"Follow-up gen failed: {e}")
             template = _MOCK_FOLLOWUPS[followup_number]
-            followup = {
-                "subject": template["subject"].format(name=name, venue=venue),
-                "body": template["body"].format(name=name, venue=venue),
-            }
+            followup = _format_template(template, name, venue)
+
+    followup = _normalize_message(followup, name)
 
     try:
         httpx.post(f"{BACKEND_URL}/outreach/followup", json={
@@ -201,17 +213,14 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
 
     if _simulation_mode:
         template = _MOCK_BOOKING_MSGS[stage]
-        message = {
-            "subject": template["subject"].format(name=name, venue=venue),
-            "body": template["body"].format(name=name, venue=venue),
-        }
+        message = _format_template(template, name, venue)
     else:
         stage_prompts = {
             "confirmed": f"Confirm logistics with {venue}: arrival, sound check, payment. 100 words max.",
             "pre_show": f"Check-in 2 days before show at {venue}. 60 words max.",
             "post_show": f"Post-show thank you to {venue}, hint at rebooking. 80 words max.",
         }
-        prompt = f"{stage_prompts[stage]}\nPerformer: {name}\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
+        prompt = f"{stage_prompts[stage]}\nPerformer: {name}\nWrite from {team_name_for(name)}'s perspective using we/our team, not from the artist personally.\nSign off exactly with: Sincerely, then {team_name_for(name)} on the next line.\nDo not use em dashes or en dashes.\nReturn ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
         try:
             resp_llm = _llm.chat.completions.create(
                 model=os.getenv("ASI1_MODEL", "asi1-mini"),
@@ -223,7 +232,9 @@ async def handle_booking_conversation(ctx: Context, booking: dict):
         except Exception as e:
             ctx.logger.error(f"Booking msg gen failed: {e}")
             template = _MOCK_BOOKING_MSGS.get(stage, _MOCK_BOOKING_MSGS["confirmed"])
-            message = {"subject": template["subject"].format(name=name, venue=venue), "body": template["body"].format(name=name, venue=venue)}
+            message = _format_template(template, name, venue)
+
+    message = _normalize_message(message, name)
 
     try:
         httpx.post(f"{BACKEND_URL}/bookings/conversation-message", json={
@@ -256,43 +267,19 @@ async def handle_rebooking(ctx: Context, booking: dict):
     venue = booking["venue_name"]
     target_id = booking["target_id"]
     booking_id = booking["id"]
-    name = _get_entertainer_name(eid)
-    entertainer_type = _get_entertainer_type(eid)
 
-    broadcast("working", f"Generating rebooking pitch for {venue}...", eid, target_id=target_id)
-
-    if _simulation_mode:
-        rebook = {
-            "subject": f"Back for another show at {venue}?",
-            "body": f"Hi,\n\nThanks again for having me - it was a great night. Any interest in booking another show this quarter? I have new tracks ready, and the feedback from last time was really positive.\n\nHappy to lock in a date whenever works for you.\n\n- {name}",
-        }
-    else:
-        prompt = f"Write a rebooking pitch to {venue} after a successful show. Performer: {name}. 80 words max. Return ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
-        try:
-            resp_llm = _llm.chat.completions.create(
-                model=os.getenv("ASI1_MODEL", "asi1-mini"),
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=250,
-            )
-            raw = resp_llm.choices[0].message.content.replace("```json", "").replace("```", "").strip()
-            rebook = json.loads(raw)
-        except Exception as e:
-            ctx.logger.error(f"Rebooking gen failed: {e}")
-            return
+    broadcast("working", f"Sending {venue} to Agent 2 for rebook outreach...", eid, target_id=target_id)
 
     try:
-        resp = httpx.post(f"{BACKEND_URL}/outreach/pitch", json={
+        resp = httpx.post(f"{BACKEND_URL}/outreach/pitch/rebook", json={
             "entertainer_id": eid,
-            "batch_id": f"rebook-{booking_id}",
-            "venue_name": venue,
-            "entertainer_type": entertainer_type,
-            "venue_contact_approach": "Rebook from prior successful show",
-            "pitch_subject": rebook["subject"],
-            "pitch_body": rebook["body"],
-            "proposed_rate": booking.get("agreed_rate"),
+            "booking_id": booking_id,
             "status": "draft",
         }, timeout=10)
-        pitch_id = resp.json().get("pitch_id", "")
+        resp.raise_for_status()
+        payload = resp.json()
+        pitch_id = payload.get("pitch_id", "")
+        pitch_body = payload.get("pitch_body", "Rebook draft created in Outreach.")
         broadcast("rebook_ready", f"Rebooking draft sent to Outreach for {venue}", eid, target_id=target_id, pitch_id=pitch_id)
     except Exception as e:
         ctx.logger.error(f"Failed to save rebooking: {e}")
@@ -302,7 +289,7 @@ async def handle_rebooking(ctx: Context, booking: dict):
         entertainer_id=eid,
         target_id=target_id,
         booking_id=booking_id,
-        message_sent=rebook["body"],
+        message_sent=pitch_body,
         response_received=None,
         conversation_stage="rebooking",
         timestamp=str(datetime.utcnow()),
@@ -337,10 +324,10 @@ async def check_seasonal_reengagement(ctx: Context):
         if _simulation_mode:
             reengage = {
                 "subject": f"{note.split(' - ')[0].strip()} - {name} available",
-                "body": f"Hi,\n\n{note}. Wanted to check back in — I'd love to be part of {venue}'s upcoming programming.\n\nWould you be open to connecting?\n\n— {name}",
+                "body": f"Hi,\n\n{note}. We wanted to check back in because {name} would be a strong fit for {venue}'s upcoming programming.\n\nWould you be open to connecting?\n\nSincerely,\n{team_name_for(name)}",
             }
         else:
-            prompt = f"Seasonal re-engagement to {venue}. Context: {note}. Performer: {pitch['entertainer_type']}. 50 words max. Return ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
+            prompt = f"Seasonal re-engagement to {venue}. Context: {note}. Performer: {name} ({pitch['entertainer_type']}). Write from {team_name_for(name)}'s perspective using we/our team, not from the artist personally. Sign off exactly with: Sincerely, then {team_name_for(name)} on the next line. 50 words max. Do not use em dashes or en dashes. Return ONLY JSON: {{\"subject\":\"...\",\"body\":\"...\"}}"
             try:
                 resp_llm = _llm.chat.completions.create(
                     model=os.getenv("ASI1_MODEL", "asi1-mini"),
@@ -352,6 +339,8 @@ async def check_seasonal_reengagement(ctx: Context):
             except Exception as e:
                 ctx.logger.error(f"Re-engagement gen failed: {e}")
                 continue
+
+        reengage = _normalize_message(reengage, name)
 
         try:
             httpx.post(f"{BACKEND_URL}/outreach/reengagement", json={

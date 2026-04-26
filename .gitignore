@@ -1,0 +1,23 @@
+.DS_Store
+
+# Local secrets
+.env
+*.env
+!.env.example
+!*.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local databases and runtime logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Frontend dependencies/build output
+node_modules/
+dist/

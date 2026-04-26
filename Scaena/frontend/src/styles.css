@@ -1,0 +1,25 @@
+@import "tailwindcss";
+
+@theme {
+  --color-neon-pink: #D138D1;
+  --color-neon-cyan: #38C7C7;
+  --color-neon-green: #48D12A;
+  --color-neon-yellow: #D1D12A;
+  --color-neon-purple: #8638C7;
+  --color-dark-bg: #0F0E13;
+  --color-panel-bg: #1B1A20;
+
+  --font-bungee: "Bungee", cursive;
+  --font-space: "Space Mono", monospace;
+}
+
+@layer base {
+  * { box-sizing: border-box; }
+  body {
+    background-color: var(--color-dark-bg);
+    color: white;
+    font-family: system-ui, -apple-system, sans-serif;
+    margin: 0;
+  }
+  button { cursor: pointer; }
+}

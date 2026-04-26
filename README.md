@@ -1,18 +1,25 @@
-# GigAI — Entertainment Booking Automation
+# Scaena OS - Entertainment Booking Automation
 
-AI-powered system that automates client acquisition for entertainment professionals: comedians, rappers, speakers, DJs, and more.
+AI-powered system that automates client acquisition for entertainment professionals: rappers, musicians, speakers, DJs, and more.
 
 ## Quick Start
 
 ```bash
-# 1. Add your Anthropic API key
-echo "ANTHROPIC_API_KEY=your_key_here" > backend/.env
+# 1. Configure local secrets
+cp Scaena/.env.example Scaena/.env
 
-# 2. Start everything (installs deps + seeds demo data automatically)
-./start.sh
+# Optional live market research sources:
+# - GEMINI_API_KEY for Gemini Grounding with Google Search
+# - GOOGLE_SEARCH_API_KEY + GOOGLE_SEARCH_ENGINE_ID for direct Google/Peerspace/social discovery
+# - EVENTBRITE_API_TOKEN for Eventbrite event discovery
+
+# 2. Start everything
+cd Scaena && ./start.sh
 ```
 
-Then open http://localhost:5173 and click **"Use demo profile"** to see Alex Rivera's (comedian) pre-seeded 3-week pipeline.
+Then open http://localhost:5173 to create an entertainer profile or load the optional demo seed data.
+
+Set `SCAENA_SEED_DEMO=true` only when you intentionally want to load the demo fixture.
 
 ## Architecture
 
@@ -21,7 +28,7 @@ backend/
   main.py               # FastAPI app
   database.py           # SQLite schema + connection
   models.py             # Pydantic request/response models
-  seed_data.py          # Demo data (Alex Rivera - comedian)
+  seed_data.py          # Optional demo data fixture
   agents/
     agent1_market_research.py   # Venue discovery + rate analysis
     agent2_pitch_generator.py   # Personalized email generation

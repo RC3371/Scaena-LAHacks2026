@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GIG_BOTS // Y2K Performer Dashboard</title>
+    <meta name="description" content="Y2K style dashboard for AI agents booking gigs for performers">
+    
+    <script src="https://resource.trickle.so/vendor_lib/unpkg/react@18/umd/react.production.min.js"></script>
+    <script src="https://resource.trickle.so/vendor_lib/unpkg/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://resource.trickle.so/vendor_lib/unpkg/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://resource.trickle.so/vendor_lib/unpkg/lucide-static@0.516.0/font/lucide.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Bungee&family=Space+Mono:ital,wght@0,400;0,700;1,400;1,700&display=swap" rel="stylesheet">
+
+    <style type="text/tailwindcss">
+    @layer theme {
+        :root {
+            --neon-pink: #FF00FF;
+            --neon-cyan: #00FFFF;
+            --neon-green: #39FF14;
+            --neon-yellow: #FFFF00;
+            --neon-purple: #9D00FF;
+            --dark-bg: #110022;
+            --panel-bg: #220044;
+        }
+    }
+
+    @layer base {
+        body {
+            @apply bg-[var(--dark-bg)] text-white;
+            font-family: 'Space Mono', monospace;
+            background-color: var(--dark-bg);
+            background-image: radial-gradient(var(--neon-purple) 2px, transparent 2px);
+            background-size: 30px 30px;
+        }
+        h1, h2, h3, .pixel-text {
+            font-family: 'Bungee', cursive;
+            letter-spacing: 1px;
+        }
+    }
+
+    @layer components {
+        .y2k-panel {
+            @apply bg-[var(--panel-bg)] border-4 border-black rounded-2xl shadow-[6px_6px_0px_0px_rgba(255,0,255,1)];
+        }
+        .y2k-panel-cyan {
+            @apply bg-[var(--panel-bg)] border-4 border-black rounded-2xl shadow-[6px_6px_0px_0px_rgba(0,255,255,1)];
+        }
+        .y2k-btn {
+            @apply px-4 py-2 bg-[var(--neon-green)] text-black border-4 border-black rounded-full uppercase tracking-wider hover:bg-[var(--neon-yellow)] hover:-translate-y-1 hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-all cursor-pointer font-bold;
+        }
+        .y2k-btn-pink {
+            @apply px-4 py-2 bg-[var(--neon-pink)] text-black border-4 border-black rounded-full uppercase tracking-wider hover:bg-[var(--neon-cyan)] hover:-translate-y-1 hover:shadow-[4px_4px_0px_0px_rgba(0,0,0,1)] transition-all cursor-pointer font-bold;
+        }
+    }
+    </style>
+    <script>
+        const ChartJS = window.Chart;
+    </script>
+</head>
+<body>
+    <div id="root"></div>
+    <script type="text/babel" src="components/Sidebar.js"></script>
+    <script type="text/babel" src="components/Header.js"></script>
+    <script type="text/babel" src="components/StatCard.js"></script>
+    <script type="text/babel" src="components/AgentList.js"></script>
+    <script type="text/babel" src="components/EmailChart.js"></script>
+    <script type="text/babel" src="app.js"></script>
+</body>
+</html>

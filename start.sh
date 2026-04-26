@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "=== GigAI Startup ==="
+echo "=== Scaena OS Startup ==="
 
 if [ ! -f backend/.env ]; then
   if [ -z "$ANTHROPIC_API_KEY" ]; then
@@ -34,8 +34,8 @@ echo "[4/4] Starting servers..."
 echo "      Backend → http://localhost:8000"
 echo "      Frontend → http://localhost:5173"
 echo ""
-echo "      Demo profile loaded: Alex Rivera (Comedian)"
-echo "      Open http://localhost:5173 and click 'Use demo profile'"
+echo "      Demo data loaded for local testing"
+echo "      Open http://localhost:5173 to create or review an entertainer pipeline"
 echo ""
 
 trap 'kill %1 %2 2>/dev/null; exit' SIGINT SIGTERM

@@ -70,6 +70,3 @@ Each round, Agent 3's insights feed back into Agents 1 and 2, improving targetin
 - **Frontend:** React 18 + Vite + Tailwind CSS + Recharts
 - **No external databases** — fully local SQLite
 
-## API Docs
-
-Swagger UI available at http://localhost:8000/docs after starting the backend.
